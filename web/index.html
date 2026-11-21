@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Panda Studio</title>
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <script>try{document.documentElement.dataset.motion=localStorage.getItem('whitebg.motion')==='off'?'off':'on';}catch(e){document.documentElement.dataset.motion='on';}</script>
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three/build/three.module.js","three/addons/":"/vendor/three/examples/jsm/"}}</script>
+</head>
+<body>
+<div class="bg-flow" aria-hidden="true"><i class="blob blob-1"></i><i class="blob blob-2"></i><i class="blob blob-3"></i><i class="blob blob-4"></i><i class="blob blob-5"></i><i class="blob blob-6"></i></div>
+<div class="app">
+  <nav class="rail" aria-label="主导航">
+    <a class="rail-logo" href="#" aria-label="Panda Studio"><img src="/logo-mark.png" alt="" draggable="false"></a>
+    <a class="rail-item" href="#" data-nav="home"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg><span>任务</span></a>
+    <a class="rail-item" href="#refs" data-nav="refs"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5.5" width="13" height="13" rx="2.5"/><path d="M7.5 3.5h10a3 3 0 0 1 3 3v10"/><path d="m4 16 3.8-3.8a1.5 1.5 0 0 1 2.1 0L16 18"/><circle cx="12.5" cy="9.5" r="1.4"/></svg><span>参考库</span></a>
+    <button class="rail-item" id="ai-settings-entry" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3.5 13.9 9a1.5 1.5 0 0 0 1 1l5.6 2-5.6 2a1.5 1.5 0 0 0-1 1L12 20.5 10.1 15a1.5 1.5 0 0 0-1-1L3.5 12l5.6-2a1.5 1.5 0 0 0 1-1z"/><path d="M19 3v3m-1.5-1.5h3"/></svg><span>AI</span></button>
+    <a class="rail-item" href="#settings" data-nav="settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10.3 3.6a1.8 1.8 0 0 1 3.4 0l.3.9a1.8 1.8 0 0 0 2.5 1l.8-.4a1.8 1.8 0 0 1 2.4 2.4l-.4.8a1.8 1.8 0 0 0 1 2.5l.9.3a1.8 1.8 0 0 1 0 3.4l-.9.3a1.8 1.8 0 0 0-1 2.5l.4.8a1.8 1.8 0 0 1-2.4 2.4l-.8-.4a1.8 1.8 0 0 0-2.5 1l-.3.9a1.8 1.8 0 0 1-3.4 0l-.3-.9a1.8 1.8 0 0 0-2.5-1l-.8.4a1.8 1.8 0 0 1-2.4-2.4l.4-.8a1.8 1.8 0 0 0-1-2.5l-.9-.3a1.8 1.8 0 0 1 0-3.4l.9-.3a1.8 1.8 0 0 0 1-2.5l-.4-.8a1.8 1.8 0 0 1 2.4-2.4l.8.4a1.8 1.8 0 0 0 2.5-1z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></a>
+    <span class="rail-spacer"></span>
+    <span class="rail-version" id="app-version">v1.3.1</span>
+  </nav>
+  <div class="pages">
+  <section id="start-page" class="page">
+    <header class="page-header"><div class="page-title"><h1 aria-label="Panda Studio"><img class="wordmark" src="/wordmark.png" alt="Panda Studio" draggable="false"></h1></div><div class="header-tools"><div data-runner></div></div></header>
+    <main class="page-main start-main">
+      <a id="setup-banner" class="setup-banner" href="#settings" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 8v5m0 3.5v.01M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3.1L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><strong>先完成本机设置</strong><span>指定 3ds Max 和白底模板后才能出图</span><span class="setup-go">去设置 →</span></a>
+      <section class="folder-panel"><h2><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>产品文件夹</h2>
+        <div id="drop-zone" class="drop-zone"><span class="drop-orb" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M12 16V4m-4 4 4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></span><p id="drop-hint" class="hint">浏览器里不能拖文件夹，请用下面的按钮</p></div>
+        <form id="scan-form"><div class="path-field"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg><input id="product-path" aria-label="产品文件夹路径" placeholder="粘贴产品文件夹的完整路径" autocomplete="off"></div><button type="button" id="browse">浏览文件夹</button><button class="primary" type="submit"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4H4v4m12-4h4v4m0 8v4h-4M8 20H4v-4M3 12h18"/></svg>扫描文件夹</button></form>
+        <div id="desktop-buttons" class="input-actions" hidden><button id="choose-product-folder">选择产品文件夹…</button><button id="choose-model-file">选择模型文件…</button></div>
+        <div id="scan-error" class="error" role="alert"></div>
+      </section>
+      <section id="scan-results" hidden><div class="section-heading"><h2 id="product-name"></h2><button id="create-task" class="primary"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>新建任务</button></div>
+        <div class="scan-grid"><section class="panel"><h3>模型</h3><div id="models"></div></section>
+          <section class="panel"><h3>参考图</h3><div id="start-refs" class="start-refs"></div><button id="start-add-reference">添加参考图…</button><input id="start-reference-input" type="file" accept=".jpg,.jpeg,.png,.webp" multiple hidden><div id="pending-refs" class="hint" role="status"></div></section>
+          <section class="panel"><h3>sku</h3><p id="sku-hint" class="hint"></p><div id="sku-files"></div></section></div>
+      </section>
+      <section class="recent"><div class="section-heading"><h2>已有任务</h2><div class="storage-controls"><span id="storage-size" class="hint"></span><button id="storage-cleanup" hidden>清理已入库任务</button></div></div><div id="task-list" class="task-grid"></div></section>
+    </main>
+  </section>
+  <section id="task-page" class="page" hidden>
+    <header class="task-header">
+      <div class="task-identity"><button id="go-home" class="plain">← 产品</button><strong id="task-product"></strong><span id="save-state" data-state="saved" role="status" title="已保存"></span></div>
+      <div class="task-steps" aria-label="出图步骤"><button id="smallshot">出小样</button><span aria-hidden="true" class="step-sep"></span><button id="final">渲染</button><span aria-hidden="true" class="step-sep"></span><button id="delivery">入库</button></div>
+      <div class="header-actions"><button id="calibration-history">AI 校准</button><span id="accepted-dot" hidden></span><button id="overview">总览</button><div data-runner></div></div>
+    </header>
+    <main class="workspace">
+      <aside class="checklist">
+        <!-- 柜子切换器：一个场景有多个柜子时出现（参考 shadcn/ui 侧栏的团队切换器） -->
+        <div id="variant-switcher" class="variant-switcher" hidden>
+          <button id="variant-trigger" class="variant-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="variant-menu" title="切换柜子（Ctrl+1、Ctrl+2…）">
+            <span id="variant-swatch" class="variant-swatch" aria-hidden="true"></span>
+            <span class="variant-text"><strong id="variant-name"></strong><small id="variant-meta"></small></span>
+            <svg class="variant-chevrons" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></svg>
+          </button>
+          <div id="variant-menu" class="variant-menu popover-panel" role="listbox" aria-label="这个场景里的柜子" hidden>
+            <div class="popover-label">这个场景里的柜子</div>
+            <div id="variant-options"></div>
+            <div class="popover-sep"></div>
+            <button type="button" class="popover-action" id="variant-rename"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"/></svg>给当前柜子改名…</button>
+            <button type="button" class="popover-action" id="variant-rescan"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>重新识别柜子</button>
+          </div>
+        </div>
+        <div class="sidebar-heading"><h2>白底清单</h2><span id="item-count"></span></div><div id="items"></div>
+        <div class="add-item-wrap">
+          <button id="add-item" class="add-item" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="view-picker">＋ 加一张</button>
+          <!-- 加视角菜单：可搜索、可直接输入新名字（参考 cmdk 命令菜单） -->
+          <div id="view-picker" class="view-picker popover-panel" role="dialog" aria-label="加一张视角" hidden>
+            <div class="view-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg><input id="view-search" type="text" placeholder="搜索视角，或输入新名字" autocomplete="off" aria-controls="view-options" aria-autocomplete="list"></div>
+            <div id="view-options" class="view-options" role="listbox"></div>
+            <div class="view-picker-foot"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 添加</span><span><kbd>Esc</kbd> 关闭</span></div>
+          </div>
+        </div>
+      </aside>
+      <section class="work-area">
+        <div class="canvas-heading"><strong id="selected-label"></strong><div class="canvas-meta"><div class="preset-switch" id="output-presets" role="radiogroup" aria-label="输出尺寸"><button type="button" role="radio" data-output-preset="4K">4K</button><button type="button" role="radio" data-output-preset="6K">6K</button><button type="button" role="radio" data-output-preset="8K">8K</button></div><span id="output-size"></span></div></div>
+        <div id="model-message" class="notice" hidden></div>
+        <div class="comparison">
+          <div id="frame-zone"><div id="frame"><canvas id="canvas" aria-label="产品画面"></canvas><img id="overlay" alt="叠加参考图" hidden><div class="margin-guide"></div><span id="outside-note" hidden>产品超出画面</span><span id="loading-model" class="is-busy">正在准备预览模型</span></div></div>
+          <div id="side-reference" hidden><img alt="并排参考图"></div>
+          <div class="canvas-tools">
+            <div class="canvas-help"><button id="canvas-help" aria-label="画面操作提示" aria-expanded="false" aria-controls="gesture-hint">?</button><div class="popover gesture-hint" id="gesture-hint"><div>左键拖动：转动与俯视</div><div>滚轮：远近</div><div>右键或 Shift＋左键：微移</div><div>双击：自动取景</div></div></div>
+            <details id="preview-menu"><summary aria-label="预览模型菜单">⋯</summary><div class="popover"><button id="choose-fbx">改用模型文件夹里的 FBX</button><button id="rotate-model" hidden>预览模型方向不对：旋转 90°</button><small id="model-dimensions"></small></div></details>
+          </div>
+        </div>
+      </section>
+      <aside class="adjustments">
+        <div class="tabs" role="tablist" aria-label="画面设置">
+          <button role="tab" id="tab-pose" aria-controls="pose-panel" data-tab="pose">画面</button>
+          <button role="tab" id="tab-lighting" aria-controls="lighting-panel" data-tab="lighting">打光</button>
+          <button role="tab" id="tab-references" aria-controls="references-panel" data-tab="references">参考图</button>
+        </div>
+        <section id="pose-panel" role="tabpanel" aria-labelledby="tab-pose">
+          <div id="pose-controls"></div><div class="preset-grid" id="presets"></div>
+          <div class="format-switch" aria-label="输出画幅"><button data-orientation="portrait">竖版</button><button data-orientation="landscape">横版</button></div>
+          <label class="switch-row correction-switch"><input type="checkbox" role="switch" id="vertical-correction" class="switch" aria-labelledby="vertical-correction-label" aria-describedby="vertical-correction-help vertical-correction-note"><span><strong id="vertical-correction-label">镜头校正</strong><small id="vertical-correction-help">柜子竖边与画面边缘平行</small><small id="vertical-correction-note" hidden>俯视超过 45° 不做竖线校正</small></span></label>
+          <details id="advanced"><summary>高级</summary><div id="advanced-controls"></div></details>
+          <section id="parts-panel" hidden><details id="parts-details"><summary>开合（仅预览）<small id="parts-count"></small></summary><div id="parts-controls"></div><button id="close-parts">全部合上</button></details></section>
+        </section>
+        <section id="lighting-panel" role="tabpanel" aria-labelledby="tab-lighting" hidden>
+          <label class="lighting-switch"><input type="checkbox" id="lighting-single">这一张单独打光</label>
+          <label class="lighting-switch"><input type="checkbox" id="lighting-enabled">光方向</label>
+          <div id="lighting-controls" hidden>
+          <svg id="lighting-disk" viewBox="0 0 180 180" role="slider" tabindex="0" aria-label="光照方向，正面在下方">
+            <defs>
+              <linearGradient id="lighting-product-fill" x2="0" y2="1"><stop stop-color="#ffffff"/><stop offset="1" stop-color="#e7e6ea"/></linearGradient>
+              <linearGradient id="lighting-beam-fill" gradientUnits="userSpaceOnUse" x1="90" y1="162" x2="90" y2="90"><stop stop-color="#ffc35a" stop-opacity=".36"/><stop offset="1" stop-color="#ffc35a" stop-opacity=".025"/></linearGradient>
+              <radialGradient id="lighting-sun-fill" cx="36%" cy="33%" r="70%"><stop stop-color="#fff4c6"/><stop offset=".53" stop-color="#ffc35a"/><stop offset="1" stop-color="#ee9a29"/></radialGradient>
+            </defs>
+            <circle cx="90" cy="90" r="72" class="lighting-ring"/>
+            <path class="lighting-ticks" d="M158.00 90.00L165.00 90.00 M158.58 108.38L162.44 109.41 M151.49 125.50L154.95 127.50 M138.08 138.08L143.03 143.03 M125.50 151.49L127.50 154.95 M108.38 158.58L109.41 162.44 M90.00 158.00L90.00 165.00 M71.62 158.58L70.59 162.44 M54.50 151.49L52.50 154.95 M41.92 138.08L36.97 143.03 M28.51 125.50L25.05 127.50 M21.42 108.38L17.56 109.41 M22.00 90.00L15.00 90.00 M21.42 71.62L17.56 70.59 M28.51 54.50L25.05 52.50 M41.92 41.92L36.97 36.97 M54.50 28.51L52.50 25.05 M71.62 21.42L70.59 17.56 M90.00 22.00L90.00 15.00 M108.38 21.42L109.41 17.56 M125.50 28.51L127.50 25.05 M138.08 41.92L143.03 36.97 M151.49 54.50L154.95 52.50 M158.58 71.62L162.44 70.59" aria-hidden="true"/><path d="M90 12V168 M12 90H168" class="lighting-axis"/><path id="lighting-beam" aria-hidden="true"/><rect id="lighting-product" x="55" y="75" width="70" height="30" rx="3"/><text x="90" y="125" text-anchor="middle">正面 ↓</text><circle id="lighting-sun-halo" cx="90" cy="162" r="15" aria-hidden="true"/><circle id="lighting-sun" cx="90" cy="162" r="9"/></svg>
+          <label class="control"><span>光的高度<output id="light-value-elevation_deg"></output></span><input id="light-elevation_deg" type="range" min="5" max="85" step="1"></label>
+          <label class="control"><span>整体亮度<output id="light-value-intensity"></output></span><input id="light-intensity" type="range" min="0.6" max="1.5" step="0.01"></label>
+          <label class="control"><span>明暗对比<output id="light-value-contrast"></output></span><input id="light-contrast" type="range" min="0" max="1" step="0.01"></label>
+          <div id="lighting-presets" class="lighting-presets"></div>
+          <label class="lighting-switch"><input type="checkbox" id="lighting-clay">素模看明暗</label>
+          <p id="lighting-description"></p>
+          </div>
+        </section>
+        <section id="references-panel" role="tabpanel" aria-labelledby="tab-references" hidden>
+          <button id="add-reference">添加参考图…</button><input id="reference-input" type="file" accept=".jpg,.jpeg,.png,.webp" multiple hidden>
+          <div id="reference-list"></div>
+          <div class="reference-modes"><label><input type="checkbox" id="overlay-on">叠在画面上</label><label><input type="checkbox" id="side-on">并排对照</label></div>
+          <label class="control"><span>透明度 <output id="opacity-value">35%</output></span><input id="opacity" type="range" min="0" max="80" value="35"></label>
+        </section>
+      </aside>
+    </main>
+  </section>
+  <section id="refs-page" class="page" hidden>
+    <main class="page-main"><div class="library-heading page-header-inline"><h1>参考库</h1><button class="primary" id="annotate-add">添加并标注…</button><input type="file" id="annotate-input" multiple accept=".jpg,.jpeg,.png,.webp" hidden></div>
+      <section class="annotated-section" id="annotated-refs"><div class="section-heading"><h2>标注参考图 <small id="annotated-count"></small></h2></div><div class="ref-grid" id="annotated-grid"></div></section>
+      <div id="refs-groups"></div>
+    </main>
+  </section>
+  <section id="settings-page" class="page" hidden>
+    <main class="page-main settings-main">
+      <div class="page-header-inline"><h1>本机设置</h1></div>
+      <section class="settings-card">
+        <h2>3ds Max</h2>
+        <label class="field-label" for="set-max-exe">程序</label>
+        <div class="field-row"><input id="set-max-exe" spellcheck="false" placeholder="…\3dsmax.exe"><button id="set-max-detect" type="button">自动查找</button><button id="set-max-browse" type="button" data-desktop-only hidden>浏览…</button></div>
+        <p class="field-status" id="set-max-status"></p>
+        <div class="field-row"><button id="set-connect" class="primary" type="button">一键查找并安装插件</button><button id="set-remove-plugin" class="plain" type="button">移除插件</button></div>
+        <p class="field-status" id="set-plugin-status"></p>
+      </section>
+      <section class="settings-card">
+        <h2>历史白底目录</h2>
+        <div id="set-history-list" class="path-list"></div>
+        <div class="field-row"><input id="set-history-input" spellcheck="false" placeholder="粘贴文件夹路径"><button id="set-history-browse" type="button" data-desktop-only hidden>浏览…</button><button id="set-history-add" type="button">添加</button></div>
+      </section>
+      <section class="settings-card">
+        <h2>数据</h2>
+        <div class="field-row"><code id="set-data-dir" class="path-code"></code><button id="set-open-data" type="button">打开文件夹</button></div>
+      </section>
+      <section class="settings-card">
+        <h2>界面</h2>
+        <label class="switch-row"><input type="checkbox" id="set-motion" class="switch"><span>动效</span></label>
+      </section>
+      <div class="settings-actions"><span id="set-status" role="status"></span><button id="set-save" class="primary" type="button">保存</button></div>
+    </main>
+  </section>
+  </div>
+</div>
+  <dialog id="dialog"><div class="dialog-header"><h2 id="dialog-title"></h2><button id="dialog-close" aria-label="关闭弹层">关闭 ×</button></div><div id="dialog-content"></div></dialog>
+  <dialog id="ai-settings-dialog" aria-labelledby="ai-settings-title">
+    <div class="dialog-header"><h2 id="ai-settings-title">AI 设置</h2></div>
+    <form id="ai-settings-form" autocomplete="off">
+      <fieldset class="ai-engine-picker">
+        <legend>校准用的 AI</legend>
+        <div>
+          <label><input type="radio" name="ai-engine" value="codex" checked><span>本机 Codex</span></label>
+          <label><input type="radio" name="ai-engine" value="openai_api"><span>API 中转站</span></label>
+        </div>
+      </fieldset>
+      <div id="ai-relay-fields" hidden>
+        <label for="ai-base-url">接口地址</label>
+        <input id="ai-base-url" type="url" placeholder="https://example.com/v1" spellcheck="false">
+        <label for="ai-key">API Key</label>
+        <div class="ai-field-action"><input id="ai-key" type="password" autocomplete="new-password"><button id="ai-clear-key" type="button">清除</button></div>
+        <label for="ai-model">模型</label>
+        <div class="ai-field-action"><input id="ai-model" type="text" list="ai-models" placeholder="选择或填写模型" spellcheck="false"><datalist id="ai-models"></datalist><button id="ai-load-models" type="button">拉取模型</button></div>
+        <div id="ai-model-count" class="hint" role="status" hidden></div>
+        <label for="ai-effort">推理强度</label>
+        <select id="ai-effort"><option value="">不传</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select>
+      </div>
+      <p id="ai-codex-note" class="hint">用这台电脑上已登录的 Codex 命令行，不用填接口地址和 Key。点「测试连接」检查能不能用（不花额度）。</p>
+      <!-- 测试连接两种引擎共用：本机 Codex 检查命令、登录和校准结构文件；中转站检查连接、识图和输出格式 -->
+      <div class="ai-test-block">
+        <button id="ai-test-connection" type="button">测试连接</button>
+        <ul id="ai-test-result" aria-live="polite" hidden></ul>
+      </div>
+      <p id="ai-settings-status" role="status" hidden></p>
+      <div class="dialog-actions"><button id="ai-settings-cancel" type="button">取消</button><button id="ai-settings-save" class="primary">保存</button></div>
+    </form>
+  </dialog>
+  <dialog id="annotate-dialog" aria-labelledby="annotate-title">
+    <div class="dialog-header"><h2 id="annotate-title"></h2><div class="annotate-tools">
+      <button id="annotate-draw" data-annotate-lock type="button">画框</button><button id="annotate-pan" data-annotate-lock type="button">平移</button>
+      <button id="annotate-zoom" data-annotate-lock type="button" title="重置缩放">100%</button>
+      <label id="annotate-library-label" for="annotate-material">材质</label><select id="annotate-material" data-annotate-lock></select>
+      <div id="annotate-task-picker" hidden><button id="annotate-task-toggle" type="button" aria-label="材质" aria-expanded="false" aria-controls="annotate-task-options" data-annotate-lock></button><div id="annotate-task-options" hidden></div></div>
+      <button id="annotate-new-material" data-annotate-lock type="button">新材质…</button>
+    </div></div>
+    <form id="annotate-material-form" hidden><label for="annotate-material-name">材质名称</label><input id="annotate-material-name" data-annotate-lock required maxlength="60"><button data-annotate-lock>添加材质</button></form>
+    <div id="annotate-stage" tabindex="0" aria-label="标注画布"><div id="annotate-frame"><img id="annotate-image" alt="" draggable="false"><div id="annotate-regions"></div></div></div>
+    <div class="annotate-footer"><button class="danger" type="button" id="annotate-delete" data-annotate-lock>删除这张标注图</button><label id="annotate-library-choice" hidden><input id="annotate-in-library" type="checkbox" data-annotate-lock> 也加入参考库</label><p id="annotate-error" class="error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" id="annotate-cancel" data-annotate-lock>取消</button><button type="button" id="annotate-save" class="primary" data-annotate-lock>保存</button></div>
+    </div>
+  </dialog>
+  <dialog id="calibration-ref-delete" aria-labelledby="calibration-ref-delete-title">
+    <div class="dialog-header"><h2 id="calibration-ref-delete-title">删除材质参考</h2></div>
+    <div class="annotation-confirm"><p id="calibration-ref-delete-name"></p>
+      <form method="dialog" class="dialog-actions"><button value="cancel" autofocus>取消</button><button class="danger" value="delete">确认删除</button></form>
+    </div>
+  </dialog>
+  <dialog id="annotate-delete-dialog" aria-labelledby="annotate-delete-title">
+    <div class="dialog-header"><h2 id="annotate-delete-title">删除这张标注图</h2></div>
+    <div class="annotation-confirm"><p>将删除参考库里的图片副本和对应裁图，源图片会保留。</p>
+      <div class="dialog-actions"><button type="button" id="annotate-delete-cancel" autofocus>取消</button><button type="button" class="danger" id="annotate-delete-confirm">确认删除</button></div>
+    </div>
+  </dialog>
+  <div id="toast" role="status" hidden></div>
+  <div id="desktop-drop-overlay" hidden><div><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 16V4m-4 4 4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>松手即可打开这个产品</div></div>
+  <script type="module" src="/window-chrome.js"></script>
+  <script type="module" src="/shell.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "exchange_dir": "exchange",
+  "template_max": "模板.max",
+  "render_preset_rps": "预设.rps",
+  "template_anchor_mm": [
+    1,
+    2,
+    3
+  ]
+}

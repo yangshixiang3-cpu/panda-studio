@@ -1,0 +1,524 @@
+[
+  {
+    "lighting": {
+      "azimuth_deg": null,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "模板默认灯光"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -180,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左后方（逆光）斜上方约 35° 照来（水平 −180°，高 35°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -111,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左后方（逆光）斜上方约 35° 照来（水平 −111°，高 35°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -110,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左侧斜上方约 35° 照来（水平 −110°，高 35°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -70,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左侧斜上方约 35° 照来（水平 −70°，高 35°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -69,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左前方斜上方约 35° 照来（水平 −69°，高 35°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -20,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左前方斜上方约 35° 照来（水平 −20°，高 35°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -19,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 −19°，高 35°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 0,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 0°，高 35°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 19,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 19°，高 35°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 20,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右前方斜上方约 35° 照来（水平 20°，高 35°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 69,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右前方斜上方约 35° 照来（水平 69°，高 35°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 70,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右侧斜上方约 35° 照来（水平 70°，高 35°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 110,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右侧斜上方约 35° 照来（水平 110°，高 35°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 111,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右后方（逆光）斜上方约 35° 照来（水平 111°，高 35°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 180,
+      "elevation_deg": 35,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右后方（逆光）斜上方约 35° 照来（水平 180°，高 35°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 5,
+      "intensity": 1,
+      "contrast": 0
+    },
+    "text": "主光从左前方低角度约 5° 照来（水平 −45°，高 5°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 5,
+      "intensity": 1,
+      "contrast": 0.299
+    },
+    "text": "主光从左前方低角度约 5° 照来（水平 −45°，高 5°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 5,
+      "intensity": 1,
+      "contrast": 0.3
+    },
+    "text": "主光从左前方低角度约 5° 照来（水平 −45°，高 5°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 5,
+      "intensity": 1,
+      "contrast": 0.7
+    },
+    "text": "主光从左前方低角度约 5° 照来（水平 −45°，高 5°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 5,
+      "intensity": 1,
+      "contrast": 0.701
+    },
+    "text": "主光从左前方低角度约 5° 照来（水平 −45°，高 5°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 5,
+      "intensity": 1,
+      "contrast": 1
+    },
+    "text": "主光从左前方低角度约 5° 照来（水平 −45°，高 5°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 19,
+      "intensity": 1,
+      "contrast": 0
+    },
+    "text": "主光从左前方低角度约 20° 照来（水平 −45°，高 19°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 19,
+      "intensity": 1,
+      "contrast": 0.299
+    },
+    "text": "主光从左前方低角度约 20° 照来（水平 −45°，高 19°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 19,
+      "intensity": 1,
+      "contrast": 0.3
+    },
+    "text": "主光从左前方低角度约 20° 照来（水平 −45°，高 19°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 19,
+      "intensity": 1,
+      "contrast": 0.7
+    },
+    "text": "主光从左前方低角度约 20° 照来（水平 −45°，高 19°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 19,
+      "intensity": 1,
+      "contrast": 0.701
+    },
+    "text": "主光从左前方低角度约 20° 照来（水平 −45°，高 19°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 19,
+      "intensity": 1,
+      "contrast": 1
+    },
+    "text": "主光从左前方低角度约 20° 照来（水平 −45°，高 19°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 20,
+      "intensity": 1,
+      "contrast": 0
+    },
+    "text": "主光从左前方斜上方约 20° 照来（水平 −45°，高 20°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 20,
+      "intensity": 1,
+      "contrast": 0.299
+    },
+    "text": "主光从左前方斜上方约 20° 照来（水平 −45°，高 20°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 20,
+      "intensity": 1,
+      "contrast": 0.3
+    },
+    "text": "主光从左前方斜上方约 20° 照来（水平 −45°，高 20°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 20,
+      "intensity": 1,
+      "contrast": 0.7
+    },
+    "text": "主光从左前方斜上方约 20° 照来（水平 −45°，高 20°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 20,
+      "intensity": 1,
+      "contrast": 0.701
+    },
+    "text": "主光从左前方斜上方约 20° 照来（水平 −45°，高 20°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 20,
+      "intensity": 1,
+      "contrast": 1
+    },
+    "text": "主光从左前方斜上方约 20° 照来（水平 −45°，高 20°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 55,
+      "intensity": 1,
+      "contrast": 0
+    },
+    "text": "主光从左前方斜上方约 55° 照来（水平 −45°，高 55°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 55,
+      "intensity": 1,
+      "contrast": 0.299
+    },
+    "text": "主光从左前方斜上方约 55° 照来（水平 −45°，高 55°）；左侧受光较亮、右侧偏暗；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 55,
+      "intensity": 1,
+      "contrast": 0.3
+    },
+    "text": "主光从左前方斜上方约 55° 照来（水平 −45°，高 55°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 55,
+      "intensity": 1,
+      "contrast": 0.7
+    },
+    "text": "主光从左前方斜上方约 55° 照来（水平 −45°，高 55°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 55,
+      "intensity": 1,
+      "contrast": 0.701
+    },
+    "text": "主光从左前方斜上方约 55° 照来（水平 −45°，高 55°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 55,
+      "intensity": 1,
+      "contrast": 1
+    },
+    "text": "主光从左前方斜上方约 55° 照来（水平 −45°，高 55°）；左侧受光较亮、右侧偏暗；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 56,
+      "intensity": 1,
+      "contrast": 0
+    },
+    "text": "主光从左前方高处（接近顶光）约 55° 照来（水平 −45°，高 56°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 56,
+      "intensity": 1,
+      "contrast": 0.299
+    },
+    "text": "主光从左前方高处（接近顶光）约 55° 照来（水平 −45°，高 56°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 56,
+      "intensity": 1,
+      "contrast": 0.3
+    },
+    "text": "主光从左前方高处（接近顶光）约 55° 照来（水平 −45°，高 56°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 56,
+      "intensity": 1,
+      "contrast": 0.7
+    },
+    "text": "主光从左前方高处（接近顶光）约 55° 照来（水平 −45°，高 56°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 56,
+      "intensity": 1,
+      "contrast": 0.701
+    },
+    "text": "主光从左前方高处（接近顶光）约 55° 照来（水平 −45°，高 56°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 56,
+      "intensity": 1,
+      "contrast": 1
+    },
+    "text": "主光从左前方高处（接近顶光）约 55° 照来（水平 −45°，高 56°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 85,
+      "intensity": 1,
+      "contrast": 0
+    },
+    "text": "主光从左前方高处（接近顶光）约 85° 照来（水平 −45°，高 85°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 85,
+      "intensity": 1,
+      "contrast": 0.299
+    },
+    "text": "主光从左前方高处（接近顶光）约 85° 照来（水平 −45°，高 85°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比柔和。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 85,
+      "intensity": 1,
+      "contrast": 0.3
+    },
+    "text": "主光从左前方高处（接近顶光）约 85° 照来（水平 −45°，高 85°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 85,
+      "intensity": 1,
+      "contrast": 0.7
+    },
+    "text": "主光从左前方高处（接近顶光）约 85° 照来（水平 −45°，高 85°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 85,
+      "intensity": 1,
+      "contrast": 0.701
+    },
+    "text": "主光从左前方高处（接近顶光）约 85° 照来（水平 −45°，高 85°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45,
+      "elevation_deg": 85,
+      "intensity": 1,
+      "contrast": 1
+    },
+    "text": "主光从左前方高处（接近顶光）约 85° 照来（水平 −45°，高 85°）；左侧受光较亮、右侧偏暗、顶面最亮；明暗对比强烈。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -0.0,
+      "elevation_deg": 35.12345678,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 0°，高 35.123457°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -1e-08,
+      "elevation_deg": 35.12345678,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 0°，高 35.123457°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 1.23456e-05,
+      "elevation_deg": 35.12345678,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 0.000012°，高 35.123457°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": -45.123456789,
+      "elevation_deg": 35.12345678,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从左前方斜上方约 35° 照来（水平 −45.123457°，高 35.123457°）；左侧受光较亮、右侧偏暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 19.99999999,
+      "elevation_deg": 35.12345678,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从正前方斜上方约 35° 照来（水平 20°，高 35.123457°）；正面受光、两侧略暗；明暗对比中等。"
+  },
+  {
+    "lighting": {
+      "azimuth_deg": 179.1234565,
+      "elevation_deg": 35.12345678,
+      "intensity": 1,
+      "contrast": 0.5
+    },
+    "text": "主光从右后方（逆光）斜上方约 35° 照来（水平 179.123457°，高 35.123457°）；右侧受光较亮、左侧偏暗；明暗对比中等。"
+  }
+]

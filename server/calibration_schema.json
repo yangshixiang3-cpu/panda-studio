@@ -1,0 +1,185 @@
+{
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "adjust"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "overrides": {
+      "type": "object",
+      "properties": {
+        "materials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "hue_shift_deg": {
+                "type": "number"
+              },
+              "saturation_mul": {
+                "type": "number"
+              },
+              "brightness_mul": {
+                "type": "number"
+              },
+              "contrast_mul": {
+                "type": "number"
+              },
+              "reflection_mul": {
+                "type": "number"
+              },
+              "glossiness_delta": {
+                "type": "number"
+              },
+              "refraction_mul": {
+                "type": "number"
+              },
+              "opacity_mul": {
+                "type": "number"
+              },
+              "ior": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "hue_shift_deg",
+              "saturation_mul",
+              "brightness_mul",
+              "contrast_mul",
+              "reflection_mul",
+              "glossiness_delta",
+              "refraction_mul",
+              "opacity_mul",
+              "ior"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "lights": {
+          "type": "object",
+          "properties": {
+            "intensity_mul": {
+              "type": "number"
+            },
+            "rotate_deg": {
+              "type": "number"
+            },
+            "per_light": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "intensity_mul": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "name",
+                  "intensity_mul"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "intensity_mul",
+            "rotate_deg",
+            "per_light"
+          ],
+          "additionalProperties": false
+        },
+        "environment": {
+          "type": "object",
+          "properties": {
+            "reflection_strength_mul": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "reflection_strength_mul"
+          ],
+          "additionalProperties": false
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "no": {
+                "type": "integer"
+              },
+              "rotate_deg": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "no",
+              "rotate_deg"
+            ]
+          }
+        }
+      },
+      "required": [
+        "materials",
+        "lights",
+        "environment",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string"
+          },
+          "observation": {
+            "type": "string"
+          },
+          "change": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "observation",
+          "change"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "required": [
+    "verdict",
+    "summary",
+    "overrides",
+    "notes",
+    "confidence"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

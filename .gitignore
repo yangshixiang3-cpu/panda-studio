@@ -1,0 +1,16 @@
+# 本机数据和构建产物（公开库不上传）
+exchange/
+pylibs/
+packaging/build/
+packaging/dist/
+packaging/output/
+tests/tmp/
+tests/screens/
+tests/*.json
+__pycache__/
+*.pyc
+*.bak
+*.lnk
+ai_settings.json
+refs/library.json
+template/*.max
