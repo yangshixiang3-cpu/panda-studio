@@ -10,6 +10,7 @@
 > - **从源码运行**：Windows 10/11、Python 3.13，`python -m pip install -r requirements.txt pywebview Pillow`
 >   （中转站 SDK 也可装到 `pylibs`：`python -m pip install --target pylibs -r requirements.txt`），
 >   然后 `pythonw desktop.pyw`。打包见 `packaging\build.ps1`（需要 PyInstaller 和 Inno Setup 6）。
+> - 许可证：MIT（见 `LICENSE`）。内含的第三方代码 three.js（`web/vendor/three`）沿用它自己的 MIT 许可证。
 > - 下文是开发过程中的完整说明，个别本机路径已换成通用写法。
 
 1.3.0 起软件改名为 Panda Studio，程序文件为 `PandaStudio.exe`；下文仍沿用「白底工作台」「工作台」的叫法，指的是同一个软件。
