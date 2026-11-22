@@ -184,6 +184,11 @@ class DesktopBridge:
 
 
 def main():
+    import sys
+    if '--render-node' in sys.argv[1:]:
+        # 内网渲染机后台服务（开机自启登记的就是这个）：不开窗口，不占 8770
+        from server.render_node import run_forever
+        return run_forever(ROOT)
     server = thread = None
     try:
         import webview
@@ -192,6 +197,9 @@ def main():
             refresh_max_plugin(ROOT)  # 换过安装位置时，把已装插件里的路径改过来
         except Exception:
             pass
+        # 这台电脑设为渲染机了但后台服务没在跑（比如刚升级）：顺手拉起来，不耽误开窗口
+        from server.node_setup import ensure_service
+        threading.Thread(target=ensure_service, args=(ROOT,), daemon=True).start()
         server, thread = start_service()
         bridge = DesktopBridge()
         # 无边框：去掉系统白色标题栏，页面自己画窗口按钮，窗口本身裁成圆角；拖动只认标了 pywebview-drag-region 的元素本身，

@@ -16,6 +16,8 @@ from .settings import MachineSettings, detect_max
 from .lighting import MAX_LIGHTING_BYTES
 from .core import ROOT, MAX_REFERENCE_BYTES, Studio, StudioError, inside
 from .textures import TaskTextures
+from .remote_client import RemoteError
+from . import node_setup
 
 mimetypes.add_type('text/javascript', '.js')
 mimetypes.add_type('text/javascript', '.mjs')
@@ -32,11 +34,13 @@ class LocalServer(ThreadingHTTPServer):
         if studio is not None:
             studio.job_index.start()
             handler.exchange_cleanup.start()
+            studio.remote.start()
 
     def server_close(self):
         studio=getattr(self.RequestHandlerClass,'studio_instance',None)
         if studio is not None:
             self.RequestHandlerClass.exchange_cleanup.close()
+            studio.remote.close()
             studio.job_index.close()
             studio.calibration.close()
         super().server_close()
@@ -145,6 +149,44 @@ def handler_for(studio):
                 raise StudioError(str(error)) from None
             raise StudioError('接口不存在。', 404)
 
+        def render_routes(self, path, method):
+            """内网渲染机：本机选渲染位置（render-target）、把这台电脑设为渲染机（render-node）。
+            会等网络或 Windows 管理员确认，不拿 studio.lock。"""
+            remote = studio.remote
+            try:
+                if path=='/api/render-target/scan' and method=='POST':
+                    self.check_origin()
+                    return self.reply(remote.choices())
+                if path=='/api/render-target/select' and method=='POST':
+                    data=self.body()
+                    target=None if data.get('mode')=='local' else {'host':data.get('host'),'port':data.get('port')}
+                    remote.select(target)
+                    return self.reply({'target':remote.target(),'runner':studio.runner_status()})
+                if path=='/api/render-target/pair' and method=='POST':
+                    data=self.body()
+                    node=remote.pair(str(data.get('host') or ''),int(data.get('port') or 0),data.get('code'))
+                    remote.select(node)
+                    return self.reply({'target':remote.target(),'runner':studio.runner_status()})
+                if path=='/api/render-target/add' and method=='POST':
+                    return self.reply(remote.add(self.body().get('address')))
+                if path=='/api/render-target/forget' and method=='POST':
+                    data=self.body()
+                    remote.settings.forget(str(data.get('host') or ''),int(data.get('port') or 0))
+                    return self.reply(remote.choices(scan=False))
+                if path=='/api/render-node' and method=='GET':
+                    return self.reply(node_setup.status(studio))
+                if path.startswith('/api/render-node/') and method=='POST':
+                    self.check_origin()
+                    action=path.rsplit('/',1)[1]
+                    handlers={'enable':node_setup.enable,'disable':node_setup.disable,'code':node_setup.regenerate_code,
+                              'forget-clients':node_setup.forget_clients,'firewall':node_setup.retry_firewall}
+                    if action in handlers:
+                        return self.reply(handlers[action](studio))
+            except RemoteError as error:
+                raise StudioError(str(error), error.status if error.status in (403,404,409,429) else
+                                  409 if error.status==401 else 400 if error.status else 502) from None
+            raise StudioError('接口不存在。',404)
+
         def dispatch(self):
             if self.headers.get('Host') not in ('127.0.0.1:8770',f'127.0.0.1:{self.server.server_port}'):
                 raise StudioError('只接受本机地址访问。',403)
@@ -179,6 +221,8 @@ def handler_for(studio):
                 self.check_origin()
                 with studio.lock:
                     return self.reply(machine.remove_plugin())
+            if path.startswith('/api/render-target') or path.startswith('/api/render-node'):
+                return self.render_routes(path, method)
             if path=='/api/storage' and method=='GET':
                 return self.reply(cleanup.storage())
             if path=='/api/storage/cleanup' and method=='POST':
@@ -222,7 +266,7 @@ def handler_for(studio):
             with studio.lock:
                 if method=='GET':
                     if path=='/api/health':return self.reply({'service':'whitebg-studio','api_version':1,'root':str(studio.root)})
-                    if path=='/api/runner':return self.reply(studio.runner.status())
+                    if path=='/api/runner':return self.reply(studio.runner_status())
                     if path=='/api/folders':return self.reply(studio.browse(arg('path')))
                     if path=='/api/tasks':return self.reply({'tasks':cleanup.list_tasks(arg('product_dir'))})
                     if path=='/api/refs':return self.reply(studio.refs.read())
@@ -254,6 +298,8 @@ def handler_for(studio):
                     return self.reply(studio.add_lighting_image(path.split('/')[3],arg('no'),content),201)
                 if path=='/api/runner/start' and method=='POST':
                     self.check_origin()
+                    if studio.remote.target() is not None:
+                        raise StudioError('现在用的是内网渲染机：那台电脑上的 Max 要在那边打开。想用本机 Max，先把渲染位置换回「本机 Max」。',409)
                     return self.reply(studio.runner.start())
                 data=self.body() if method in ('POST','PUT') else {}
                 if path=='/api/refs/materials' and method=='POST':

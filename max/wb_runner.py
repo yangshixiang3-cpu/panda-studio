@@ -22,7 +22,10 @@ if str(_HERE) not in sys.path:
 import wb_core as core
 
 
-LOCK_SCRIPT = r"C:\Users\<用户名>\.codex\skills\panel-furniture-modeling\scripts\pf_max_lock.ms"
+# 优先用建模技能里的锁脚本（和建模会话共用一把锁）；别的电脑（如内网渲染机）没有就用随程序带的副本。
+LOCK_SCRIPT = str(core.lock_script_path(
+    Path.home() / ".codex" / "skills" / "panel-furniture-modeling" / "scripts" / "pf_max_lock.ms",
+    _HERE / "pf_max_lock.ms"))
 _SESSION_KEY = "_whitebg_studio_runner_session_v01"
 RUNNER_VERSION = "0.2"
 if _SESSION_KEY not in sys.modules:
@@ -100,6 +103,7 @@ class Runner:
         lock_attempted = False
         scene_touched = False
         quiet_previous = None
+        map_paths_before = None
         try:
             self.status = core.new_status(self.job)
             task_id = str(self.job["task_id"])
@@ -127,6 +131,7 @@ class Runner:
             self.flush()
             quiet_previous = rt.SetQuietMode(True)
             scene_touched = True  # load 失败也可能留下部分场景，必须清场。
+            map_paths_before = self._add_asset_dirs()
             with pymxs.animate(False), pymxs.attime(0):
                 if self.job["type"] == "export_preview":
                     self.export_preview()
@@ -143,6 +148,8 @@ class Runner:
         except Exception:
             self.fail("任务异常：" + traceback.format_exc())
         finally:
+            if map_paths_before is not None:
+                self._remove_asset_dirs(map_paths_before)
             if acquired and scene_touched:
                 try:
                     if rt.resetMaxFile(rt.Name("noPrompt")) is False:
@@ -182,6 +189,29 @@ class Runner:
             if item["state"] in ("pending", "rendering"):
                 item.update(state="failed", message=message)
         self.log(message)
+
+    def _add_asset_dirs(self):
+        """内网渲染机的作业带 asset_dirs（工作台传过来的模型文件夹）：临时加进 Max 贴图搜索路径，
+        贴图原来的绝对路径在这台电脑上不存在时按文件名找到。返回加之前的条数，任务结束时删回去；没加返回 None。"""
+        dirs = core.asset_search_dirs(self.job)
+        if not dirs:
+            return None
+        try:
+            before = int(rt.mapPaths.count())
+            for directory in dirs:
+                rt.mapPaths.add(directory)
+            self.log("贴图搜索路径加入模型文件夹（{} 个）".format(len(dirs)))
+            return before
+        except Exception:
+            self.log("加入贴图搜索路径失败（继续任务，可能缺贴图）：" + traceback.format_exc())
+            return None
+
+    def _remove_asset_dirs(self, before):
+        try:
+            for index in range(int(rt.mapPaths.count()), before, -1):
+                rt.mapPaths.delete(index)
+        except Exception:
+            self.log("移除临时贴图搜索路径失败：" + traceback.format_exc())
 
     def _touch(self):
         answer = str(rt.execute("::PFMaxLock.touch {}".format(_ms_string(self.owner))))

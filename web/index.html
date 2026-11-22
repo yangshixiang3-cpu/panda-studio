@@ -19,13 +19,13 @@
     <button class="rail-item" id="ai-settings-entry" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3.5 13.9 9a1.5 1.5 0 0 0 1 1l5.6 2-5.6 2a1.5 1.5 0 0 0-1 1L12 20.5 10.1 15a1.5 1.5 0 0 0-1-1L3.5 12l5.6-2a1.5 1.5 0 0 0 1-1z"/><path d="M19 3v3m-1.5-1.5h3"/></svg><span>AI</span></button>
     <a class="rail-item" href="#settings" data-nav="settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10.3 3.6a1.8 1.8 0 0 1 3.4 0l.3.9a1.8 1.8 0 0 0 2.5 1l.8-.4a1.8 1.8 0 0 1 2.4 2.4l-.4.8a1.8 1.8 0 0 0 1 2.5l.9.3a1.8 1.8 0 0 1 0 3.4l-.9.3a1.8 1.8 0 0 0-1 2.5l.4.8a1.8 1.8 0 0 1-2.4 2.4l-.8-.4a1.8 1.8 0 0 0-2.5 1l-.3.9a1.8 1.8 0 0 1-3.4 0l-.3-.9a1.8 1.8 0 0 0-2.5-1l-.8.4a1.8 1.8 0 0 1-2.4-2.4l.4-.8a1.8 1.8 0 0 0-1-2.5l-.9-.3a1.8 1.8 0 0 1 0-3.4l.9-.3a1.8 1.8 0 0 0 1-2.5l-.4-.8a1.8 1.8 0 0 1 2.4-2.4l.8.4a1.8 1.8 0 0 0 2.5-1z"/><circle cx="12" cy="12" r="3"/></svg><span>设置</span></a>
     <span class="rail-spacer"></span>
-    <span class="rail-version" id="app-version">v1.3.1</span>
+    <span class="rail-version" id="app-version">v1.4.0</span>
   </nav>
   <div class="pages">
   <section id="start-page" class="page">
     <header class="page-header"><div class="page-title"><h1 aria-label="Panda Studio"><img class="wordmark" src="/wordmark.png" alt="Panda Studio" draggable="false"></h1></div><div class="header-tools"><div data-runner></div></div></header>
     <main class="page-main start-main">
-      <a id="setup-banner" class="setup-banner" href="#settings" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 8v5m0 3.5v.01M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3.1L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><strong>先完成本机设置</strong><span>指定 3ds Max 和白底模板后才能出图</span><span class="setup-go">去设置 →</span></a>
+      <a id="setup-banner" class="setup-banner" href="#settings" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 8v5m0 3.5v.01M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3.1L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><strong>先完成本机设置</strong><span>指定 3ds Max 后才能出图；本机没装 Max 的话，在右上角「渲染位置」选一台内网渲染机</span><span class="setup-go">去设置 →</span></a>
       <section class="folder-panel"><h2><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg>产品文件夹</h2>
         <div id="drop-zone" class="drop-zone"><span class="drop-orb" aria-hidden="true"><svg class="ui-icon" viewBox="0 0 24 24" focusable="false"><path d="M12 16V4m-4 4 4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></span><p id="drop-hint" class="hint">浏览器里不能拖文件夹，请用下面的按钮</p></div>
         <form id="scan-form"><div class="path-field"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/></svg><input id="product-path" aria-label="产品文件夹路径" placeholder="粘贴产品文件夹的完整路径" autocomplete="off"></div><button type="button" id="browse">浏览文件夹</button><button class="primary" type="submit"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 4H4v4m12-4h4v4m0 8v4h-4M8 20H4v-4M3 12h18"/></svg>扫描文件夹</button></form>
@@ -144,6 +144,22 @@
         <p class="field-status" id="set-max-status"></p>
         <div class="field-row"><button id="set-connect" class="primary" type="button">一键查找并安装插件</button><button id="set-remove-plugin" class="plain" type="button">移除插件</button></div>
         <p class="field-status" id="set-plugin-status"></p>
+      </section>
+      <section class="settings-card" id="node-card">
+        <h2>渲染机</h2>
+        <p class="hint">把这台电脑共享给公司内网里的同事：他们的 Panda Studio 在顶部「渲染位置」里选这台电脑，就能用这台的 3ds Max 出图，自己电脑不用装 Max。</p>
+        <div id="node-off">
+          <div class="field-row"><button id="node-enable" class="primary" type="button">设为渲染机</button></div>
+          <p class="hint">会自动：装好 Max 插件，登录 Windows 后在后台运行（不开窗口），防火墙只放行公司内网（Windows 会弹一次管理员确认）。</p>
+        </div>
+        <div id="node-on" hidden>
+          <div class="node-code"><span>连接码</span><strong id="node-code" aria-live="polite">------</strong><button id="node-new-code" class="plain" type="button">换一个</button></div>
+          <p class="hint">同事第一次连这台电脑时要输入这 6 位连接码。换一个连接码不影响已经连上的电脑。</p>
+          <dl class="node-facts"><dt>电脑名</dt><dd id="node-name"></dd><dt>IP 地址</dt><dd id="node-ip"></dd></dl>
+          <ul id="node-checks" class="node-checks"></ul>
+          <p class="hint" id="node-clients"></p>
+          <div class="field-row"><button id="node-firewall" type="button" hidden>重新放行防火墙</button><button id="node-forget" class="plain" type="button" hidden>断开所有已连接的电脑</button><button id="node-disable" class="plain" type="button">停止共享</button></div>
+        </div>
       </section>
       <section class="settings-card">
         <h2>历史白底目录</h2>

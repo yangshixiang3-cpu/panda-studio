@@ -6,3 +6,4 @@ import './lighting.test.mjs';
 
 import './lightbox.test.mjs';
 import './task-state.test.mjs';
+import './render-target.test.mjs';

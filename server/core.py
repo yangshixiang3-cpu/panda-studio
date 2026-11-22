@@ -277,6 +277,8 @@ class Studio:
         (self.exchange/'jobs').mkdir(parents=True,exist_ok=True)
         self.job_index = JobIndex(self.exchange/'jobs', read_json)
         self.runner = RunnerStatus(self.root, self.exchange, self.config)
+        from .remote_client import RemoteBridge
+        self.remote = RemoteBridge(self)   # 内网渲染机：选了渲染机时转发作业（后台线程由 LocalServer 启动）
         from .calibration import Calibration
         from .ref_library import RefLibrary
         self.refs = RefLibrary(self.root)
@@ -324,6 +326,17 @@ class Studio:
 
     def template_path(self):
         return (self.root/TEMPLATE_FILE).resolve()
+
+    def write_job(self, job):
+        """写作业文件。渲染位置选的是内网渲染机时，先登记给转发线程（写带 remote 标记的状态），本机执行器不会接。"""
+        self.remote.claim(job)
+        atomic_json(self.exchange/'jobs'/(job['job_id']+'.json'),job,immutable=True)
+
+    def runner_status(self):
+        """界面上的执行器状态：本机 Max，或当前选的内网渲染机。"""
+        if self.remote.target() is not None:
+            return self.remote.runner_status()
+        return {**self.runner.status(), 'target': None}
 
     def _product_prefs(self):
         try:
@@ -865,7 +878,7 @@ class Studio:
         job_id=new_id()
         job={'type':'export_preview','job_id':job_id,'task_id':task_id,'created_at':now(),
              'max_file':task['model_max'],'out_fbx':str(base/'preview.fbx'),'out_bbox':str(base/'bbox.json')}
-        atomic_json(self.exchange/'jobs'/(job_id+'.json'),job,immutable=True)
+        self.write_job(job)
         task.update(preview_source='export',preview_fbx=job['out_fbx'],preview_rotation_deg=0)
         self.save(task)
         return {'job':job,'task':task}
@@ -929,7 +942,7 @@ class Studio:
                                  'out_image':str(output_folder/f'{no}.jpg'),
                                  'out_mask':str(self.task_dir(task_id)/folder/f'{no}_遮罩_ID.jpg') if mode=='final' else None})
             item[mode].update(state='queued',job_id=job_id,file=str((output_folder/f'{no}.jpg').relative_to(self.task_dir(task_id))))
-        atomic_json(self.exchange/'jobs'/(job_id+'.json'),job,immutable=True)
+        self.write_job(job)
         task.update(lighting_config)
         self.save(task)
         return job
@@ -946,7 +959,7 @@ class Studio:
             stable = {**payload, 'progress': {k: v for k, v in progress.items() if k != 'eta_sec'}}
             signature = hashlib.sha256(json.dumps(
                 stable, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
-            payload.update(runner=self.runner.status(), progress=progress, signature=signature)
+            payload.update(runner=self.runner_status(), progress=progress, signature=signature)
             return payload
 
     def _merge(self, task_id, jobs=None):

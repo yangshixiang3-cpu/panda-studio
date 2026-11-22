@@ -36,6 +36,17 @@
 
 需要本机 Python 3.13（已装 pywebview、Pillow、`pyinstaller==6.22.3`）和 Inno Setup 6（`D:\Tools\InnoSetup6`）。配置：`packaging\whitebg.spec`（PyInstaller）、`packaging\installer.iss`（安装程序）、`packaging\icon\app.ico`（图标）、`packaging\ChineseSimplified.isl`（安装界面中文，来自 Inno Setup 官方仓库的社区翻译）。版本号改 `installer.iss` 的 `AppVersion` 和 `web\index.html` 的 `app-version`。
 
+## 用公司内网里别的电脑的 Max 出图（1.4.0 起）
+
+自己电脑可以不装 3ds Max，选内网里另一台装了 Max 的电脑（渲染机）出图。
+
+1. **在渲染机上**（装了 3ds Max 2025 + Corona 的那台）：装同一个 Panda Studio，打开「本机设置」，在「渲染机」里点「设为渲染机」。Windows 会弹一次管理员确认（防火墙只放行公司内网）。之后它在登录 Windows 后自动在后台运行。设置页显示 6 位连接码，把 Max 打开放着即可。
+2. **在你的电脑上**：点右上角的状态片（原来显示「Max」的地方），面板里会列出内网里找到的渲染机。点一台，输入它的连接码，就换成这台出图了。找不到的话，在面板底部输入渲染机的电脑名或 IP 手动添加。
+3. 出小样、正式渲染、AI 校准照常点。软件会把产品文件夹里的模型和贴图传过去（同一个产品只传一次），结果自动传回你的任务文件夹，入库还是在你电脑上做。
+4. 想换回自己的 Max，在同一个面板里点「本机 Max」。多台渲染机时，哪台的 Max 开着、空闲，就选哪台。
+
+协议细节见 [docs/SPEC.md](docs/SPEC.md) §14。
+
 ## 输出尺寸
 
 正式图分三档，在任务页画布右上角切换：**4K = 3000×4000，6K = 4500×6000，8K = 6000×8000**（竖版；横版宽高对调）。切换后已出的成品要重新渲染。档位越高越吃内存和时间，8K 约是 4K 的 4 倍。

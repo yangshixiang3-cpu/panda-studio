@@ -92,7 +92,9 @@ class MachineSettings:
         return {'max_exe': max_exe, 'max_year': max_plugin.max_year(max_exe) if checks['max_exe'] else None,
                 'plugin': plugin, 'history_roots': roots,
                 'data_dir': str(self.studio.exchange), 'app_dir': str(self.studio.root),
-                'checks': checks, 'ready': checks['max_exe'] and checks['template']}
+                'checks': checks, 'render_target': self.studio.remote.target(),
+                # 用内网渲染机出图时，本机不需要装 Max、也不需要模板
+                'ready': bool(self.studio.remote.target()) or (checks['max_exe'] and checks['template'])}
 
     def connect_max(self):
         """一键：没有有效的 3dsmax.exe 就自动找一个；再装好（或更新）连接插件。"""

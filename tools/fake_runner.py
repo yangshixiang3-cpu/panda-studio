@@ -15,7 +15,10 @@ def process_job(job_path, fixture, heartbeat=None):
     from PIL import Image, ImageDraw, ImageFont
     job=read_json(job_path); exchange=job_path.parent.parent
     status_path=job_path.with_name(job['job_id']+'.status.json')
-    if status_path.exists() and read_json(status_path)['state'] in ('done','failed'):return False
+    if status_path.exists():
+        previous=read_json(status_path)
+        # 已结束的、或已交给内网渲染机的作业（状态里带 remote）不处理
+        if previous['state'] in ('done','failed') or previous.get('remote'):return False
     status={'job_id':job['job_id'],'state':'running','started_at':now(),'updated_at':now(),
             'items':[],'message':'开发占位，非正式渲染。','log':['假执行器开始处理。'],
             'runner_version':'fake'}

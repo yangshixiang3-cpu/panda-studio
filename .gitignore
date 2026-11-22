@@ -12,5 +12,7 @@ __pycache__/
 *.bak
 *.lnk
 ai_settings.json
+render_node.json
+remote_nodes.json
 refs/library.json
 template/*.max

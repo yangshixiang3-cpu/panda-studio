@@ -6,7 +6,7 @@
 ; - config.json、参考库清单 refs\library.json 只在第一次安装时放入，升级重装不会覆盖；内置材质参考（refs 下的图片和 builtin.json）每次都更新；
 ;   卸载时保留数据（exchange、用户的参考库清单、设置）。
 #define AppName "Panda Studio"
-#define AppVersion "1.3.1"
+#define AppVersion "1.4.0"
 #define AppExe "PandaStudio.exe"
 #define DistDir "dist\PandaStudio"
 
@@ -108,4 +108,11 @@ begin
   if not WebView2Installed() then
     MsgBox('这台电脑没有检测到 Microsoft Edge WebView2 运行库，Panda Studio 的界面需要它。' + #13#10 +
            '安装完成后如果打不开，请到微软官网搜索「WebView2 Runtime」安装。', mbInformation, MB_OK);
+end;
+
+{ 卸载时：取消「渲染机」的开机自启（这台电脑设为渲染机时登记在当前用户的 Run 键里） }
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'PandaStudioRenderNode');
 end;

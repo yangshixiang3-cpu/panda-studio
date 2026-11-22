@@ -39,7 +39,38 @@ export function installSettings({$,api,toast,guard,escape}){
     showDesktop();
     state=await api('/api/settings');
     render();
+    loadNode().catch(error=>toast(error.message));
   }
+
+  // ── 渲染机：把这台电脑共享给内网里别的电脑 ──
+  let node=null;
+  const CHECKS=[['max_exe','3ds Max 程序'],['plugin','Max 连接插件'],['template','白底模板'],['runner_online','Max 已打开并连上'],
+    ['firewall','防火墙放行内网'],['autostart','登录 Windows 后自动运行']];
+  function renderNode(){
+    $('node-off').hidden=node.enabled;$('node-on').hidden=!node.enabled;
+    if(!node.enabled)return;
+    $('node-code').textContent=node.code||'------';
+    $('node-name').textContent=node.name;
+    $('node-ip').textContent=node.addresses.length?node.addresses.join('、'):'没查到（同事可以直接输电脑名）';
+    const items=[['running',node.running,'后台服务运行中','后台服务没在运行']]
+      .concat(CHECKS.map(([key,label])=>[key,node.checks[key],label,label]));
+    $('node-checks').innerHTML=items.filter(([,ok])=>ok!==null&&ok!==undefined).map(([key,ok,good,bad])=>
+      `<li class="${ok?'ok':key==='runner_online'?'wait':'bad'}">${escape(ok?good:bad)}${!ok&&key==='runner_online'?'<small>打开 Max 后别的电脑才能出图</small>':''}</li>`).join('');
+    $('node-firewall').hidden=node.checks.firewall!==false;
+    $('node-forget').hidden=!node.clients.length;
+    $('node-clients').textContent=node.clients.length?`已连接过：${node.clients.map(c=>c.name).join('、')}`:'还没有电脑连过来。';
+  }
+  async function loadNode(){node=await api('/api/render-node');renderNode();}
+  async function nodeAction(button,path,pending){
+    const label=button.textContent;button.disabled=true;button.textContent=pending;
+    try{node=await api(path,{});renderNode();if(node.message)toast(node.message);}
+    finally{button.disabled=false;button.textContent=label;}
+  }
+  $('node-enable').onclick=guard(()=>nodeAction($('node-enable'),'/api/render-node/enable','正在设置…'));
+  $('node-disable').onclick=guard(()=>nodeAction($('node-disable'),'/api/render-node/disable','正在停止…'));
+  $('node-new-code').onclick=guard(()=>nodeAction($('node-new-code'),'/api/render-node/code','…'));
+  $('node-forget').onclick=guard(()=>nodeAction($('node-forget'),'/api/render-node/forget-clients','正在断开…'));
+  $('node-firewall').onclick=guard(()=>nodeAction($('node-firewall'),'/api/render-node/firewall','等待确认…'));
   async function checkReady(){
     try{const data=await api('/api/settings');state=data;$('setup-banner').hidden=data.ready;}
     catch{ $('setup-banner').hidden=true; }

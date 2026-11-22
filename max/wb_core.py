@@ -204,6 +204,9 @@ def pending_jobs(jobs_dir, on_error: Optional[Callable] = None):
             status = read_status(path.with_name(path.stem + ".status.json"))
             if status and status["state"] in TERMINAL_STATES:
                 continue
+            # 已交给内网渲染机的作业（状态里带 remote，由工作台转发），本机执行器不碰。
+            if status and status.get("remote"):
+                continue
             data = read_json(path)
             if not isinstance(data, dict) or data.get("job_id") != path.stem:
                 raise ValueError("任务 job_id 必须与文件名相同")
@@ -221,6 +224,31 @@ def pending_jobs(jobs_dir, on_error: Optional[Callable] = None):
 def next_job(jobs_dir, on_error=None):
     jobs = pending_jobs(jobs_dir, on_error)
     return jobs[0] if jobs else None
+
+
+def lock_script_path(preferred, bundled):
+    """Max 锁脚本：优先用建模技能里的那份（和建模会话共用同一把锁），这台电脑没有时用随程序带的副本。"""
+    preferred, bundled = Path(preferred), Path(bundled)
+    return preferred if preferred.is_file() else bundled
+
+
+ASSET_DIR_LIMIT = 200
+
+
+def asset_search_dirs(job):
+    """内网渲染机：模型文件夹（连同子文件夹）加进 Max 贴图搜索路径，贴图按文件名就能找到。
+    只接受存在的绝对路径文件夹，最多 ASSET_DIR_LIMIT 个。"""
+    found = []
+    for value in job.get("asset_dirs") or []:
+        base = Path(str(value))
+        if not base.is_absolute() or not base.is_dir():
+            continue
+        for directory, folders, _ in os.walk(base):
+            folders.sort()
+            found.append(str(Path(directory)))
+            if len(found) >= ASSET_DIR_LIMIT:
+                return found
+    return found
 
 
 def new_status(job):
