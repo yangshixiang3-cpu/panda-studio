@@ -21,9 +21,11 @@ SKIP_DIRS = {'__pycache__', 'tests', 'tmp'}
 SKIP_SUFFIX = {'.bak', '.prev', '.pyc', '.tmp'}
 # 不进安装包：开发用文件，以及会单独生成干净副本的清单
 SKIP_FILES = {'web/package.json', 'refs/build-report.json', 'refs/library.json', 'refs/builtin.json'}
-# 用不到的第三方文件：安卓、32 位和 ARM 的 WebView2/CLR 组件、API 文档
+# 用不到的第三方文件：安卓、32 位组件和 XML 文档。
+# 注意：pywebview/platforms/edgechromium.py 启动时会无条件遍历 win-arm64、win-x64、win-x86 三个 runtimes 目录，
+# 缺任一个都会报 FileNotFoundError: Cannot find win-arm64，因此绝不能排除 runtimes/win-*！
 SKIP_BINARIES = re.compile(r'(^|/)(pywebview-android\.jar|WebBrowserInterop\.x86\.dll|Python\.Runtime\.xml)$'
-                           r'|runtimes/win-(x86|arm64)/|clr_loader/ffi/dlls/x86/', re.I)
+                           r'|clr_loader/ffi/dlls/x86/', re.I)
 
 VERSION = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
 if not re.fullmatch(r'\d+\.\d+\.\d+', VERSION):

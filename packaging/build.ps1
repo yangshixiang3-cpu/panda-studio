@@ -50,6 +50,11 @@ $env:PYTHONDONTWRITEBYTECODE = '1'
 if ($LASTEXITCODE) { throw "PyInstaller 失败（$LASTEXITCODE）" }
 
 $dist = Join-Path $packaging 'dist\PandaStudio'
+# 发布前检查：pywebview 启动时会无条件检查这三个 WebView2 runtimes 目录，缺一不可
+foreach ($arch in 'win-arm64', 'win-x64', 'win-x86') {
+    $dll = Join-Path $dist "webview\lib\runtimes\$arch\native\WebView2Loader.dll"
+    if (-not (Test-Path -LiteralPath $dll)) { throw "安装包缺少 WebView2 运行时文件：$dll" }
+}
 # 发布前检查：安装包里的文本文件不能出现公司素材路径、本机用户名等（同 tools\export_public.py 的 FORBIDDEN）
 $forbidden = '(?<![A-Za-z0-9])sk-(?!fake)[A-Za-z0-9]{16,}'
 $problems = Get-ChildItem $dist -Recurse -File -Include *.json, *.js, *.mjs, *.cjs, *.html, *.css, *.py, *.ms, *.txt |

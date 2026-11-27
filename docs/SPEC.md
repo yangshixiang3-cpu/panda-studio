@@ -763,3 +763,7 @@ render 任务新增字段：
   - 升级 `material_key(name, library)` 多级匹配（精确匹配 → 去前后缀编号与饰面词 → 最长关键词优先 → 核心词反向匹配如「胡桃」→「胡桃木」→ 安全同义词表），严禁泛称「玻璃/清玻/茶玻」误配「长虹玻璃」。
   - 支持任务级显式绑定 `task.material_bindings`（自动匹配 / 指定任意参考库分组 / `__none__` 不对照参考库），在「材质参数」下拉框与「AI 校准」参考对应摘要条中直接查看与修改。
   - 未匹配到具体场景材质的任务框选参考不再静默丢弃（归入 `其他参考（<名称>）`）；12 张图片预算调整为小样+分区对照 → 本任务框选参考 → 参考库已标注裁图 → 已认可/候选材质参考 → 风格与主图参考 → 剩余名额才补同产品泛白底；每张参考图 `role` 明确写出对应场景材质名与目标 Lab，并向模型传入结构化 `material_reference_map` 与逐材质配色硬约束。
+
+### 15.17 1.8.1 新机安装启动热修（2026-11-27）
+
+- **修复新电脑首次安装报错 `Cannot find win-arm64`**：`pywebview/platforms/edgechromium.py` 导入时会无条件遍历 `('win-arm64', 'win-x64', 'win-x86')` 调用 `interop_dll_path()`，此前 `1.7.2`/`1.8.0` 在 `packaging/whitebg.spec` 的 `SKIP_BINARIES` 中排除了 `runtimes/win-(x86|arm64)/`，导致未装过旧版的电脑启动时报 `FileNotFoundError: Cannot find win-arm64`。已从 `SKIP_BINARIES` 移除该过滤，并在 `packaging/build.ps1` 中强制校验三个 `WebView2Loader.dll` 均存在。
