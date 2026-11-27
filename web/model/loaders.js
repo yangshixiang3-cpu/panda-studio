@@ -3,6 +3,7 @@ import {FBXLoader} from 'three/addons/loaders/FBXLoader.js';
 import {captureRig,normalizeRig} from './rig.js';
 // 饰面色表放在不依赖 three 的 finishes.js，单测和其他模块也能用
 import {finishes} from '../finishes.js';
+import {withFilteredFbxWarnings} from '../variants.js';
 export {materialKind,finishColorOf} from '../finishes.js';
 
 function previewMaterial(source,envMap) {
@@ -154,18 +155,16 @@ async function loadTextureImage({url,name},signal) {
   }
 }
 
-// keepNames：一个场景有多个柜子时，只保留当前柜子的网格（按 Max 节点名），并以它为中心、按它算尺寸。
-export function parseFbx(data,{bbox=null,rotation=0,taskId,envMap=null,anisotropy=1,onTexturesChanged,keepNames=null}={}) {
-  const manager=new LoadingManager(),warnings=[],sources=new Map(),embeddedUrls=new Set();
-  const requests=new Map(),materials=new Set(),oldMaterials=new Set(),missingTextures=new Set();
-  const controller=new AbortController(),{signal}=controller;
+/** 单次解析 FBX 并提取 Corona 贴图绑定，不持有原始 ArrayBuffer 引用，供款式检测与预览建模复用。 */
+export function parseFbxAsset(data,{taskId}={}) {
+  const manager=new LoadingManager(),sources=new Map(),embeddedUrls=new Set();
   manager.addHandler(/.*/,{
     path:'',setPath(path){this.path=path;return this;},
     load(url){
       const texture=new Texture();
       const source=textureSource(url,taskId);
       if(source)sources.set(texture,source);
-      if(url.startsWith('blob:'))embeddedUrls.add(url);
+      if(String(url).startsWith('blob:'))embeddedUrls.add(url);
       return texture;
     }
   });
@@ -173,15 +172,46 @@ export function parseFbx(data,{bbox=null,rotation=0,taskId,envMap=null,anisotrop
     if(embeddedUrls.delete(url))URL.revokeObjectURL(url);
   }
   let asset;
-  try{asset=new FBXLoader(manager).parse(data,'');}
-  catch(error){for(const url of embeddedUrls)releaseEmbedded(url);throw error;}
+  try{asset=withFilteredFbxWarnings(()=>new FBXLoader(manager).parse(data,''));}
+  catch(error){for(const url of [...embeddedUrls])releaseEmbedded(url);throw error;}
   const coronaBindings=coronaTextureBindings(data,sources);
-  let index=0; const meshes=[];
-  asset.traverse(o=>{if(o.isMesh&&(!keepNames||keepNames.has(o.name))){o.userData.previzKey=`m${index++}`;meshes.push(o);}});
+  let consumed=false;
+  return {
+    isPreparedFbx:true,asset,sources,embeddedUrls,releaseEmbedded,coronaBindings,
+    consume(){consumed=true;},
+    abort(){
+      if(consumed)return;
+      consumed=true;
+      for(const url of [...embeddedUrls])releaseEmbedded(url);
+      asset.traverse(o=>{
+        o.geometry?.dispose?.();
+        for(const m of [].concat(o.material||[]))m?.dispose?.();
+      });
+      for(const texture of sources.keys()){texture.dispose();texture.image=null;}
+    },
+  };
+}
+
+// keepNames：一个场景有多个柜子时，只保留当前柜子的网格（按 Max 节点名），并以它为中心、按它算尺寸。
+export function parseFbx(input,{bbox=null,rotation=0,taskId,envMap=null,anisotropy=1,onTexturesChanged,keepNames=null}={}) {
+  const prepared=input?.isPreparedFbx?input:parseFbxAsset(input,{taskId});
+  prepared.consume();
+  const {asset,sources,embeddedUrls,releaseEmbedded,coronaBindings}=prepared;
+  const warnings=[],requests=new Map(),materials=new Set(),oldMaterials=new Set(),missingTextures=new Set();
+  const controller=new AbortController(),{signal}=controller;
+  let index=0; const meshes=[],skipped=[];
+  asset.traverse(o=>{
+    if(!o.isMesh)return;
+    if(!keepNames||keepNames.has(o.name)){o.userData.previzKey=`m${index++}`;meshes.push(o);}
+    else skipped.push(o);
+  });
   if(!meshes.length){
-    for(const url of embeddedUrls)releaseEmbedded(url);
+    for(const url of [...embeddedUrls])releaseEmbedded(url);
+    for(const m of skipped){m.geometry?.dispose?.();for(const mat of [].concat(m.material||[]))mat?.dispose?.();}
+    for(const texture of sources.keys()){texture.dispose();texture.image=null;}
     throw new Error(keepNames?'预览模型里找不到这个柜子的物体，模型可能改过，请点柜子切换器里的「重新识别柜子」。':'模型里没有可预览的网格。');
   }
+  for(const m of skipped){m.geometry?.dispose?.();for(const mat of [].concat(m.material||[]))oldMaterials.add(mat);}
   const raw=captureRig(asset);asset.updateMatrixWorld(true);
   const rawBox=new Box3();for(const m of meshes)rawBox.union(new Box3().setFromObject(m));
   const unit=(asset.userData.unitScaleFactor>0?asset.userData.unitScaleFactor:1)*10;

@@ -406,10 +406,10 @@ render 任务新增字段：
 
 ### 11.9 本任务材质参考
 
-- `task.ai_calibration.task_refs` 保存 `{id, file, name, created_at, in_library, regions}`。`file` 相对于任务目录，原图和裁图分别保存在 `calibration_refs/` 与 `calibration_refs/crops/`。每个框保存 `{material, material_source, box:[x,y,w,h]}`，坐标归一化。任务详情回包包含最新可用场景清单中的 `scene_materials`。
-- `POST /api/tasks/{id}/calibration-refs/upload?name=…` 接收不超过 50 MB 的图片字节并返回 `{entry}`。`PUT /api/tasks/{id}/calibration-refs/{ref_id}` 保存 `{regions,in_library}` 并返回 `{entry}`。`DELETE` 删除任务里的图和裁图。三种写入均校验来源，并用服务锁保护任务记录。
+- `task.ai_calibration.task_refs` 保存 `{id, file, name, created_at, in_library, regions}`，1.7.1 起还有 `library_file`（收进参考库的那张标注图）和 `library_synced`（已收进参考库）。`file` 相对于任务目录，原图和裁图分别保存在 `calibration_refs/` 与 `calibration_refs/crops/`。每个框保存 `{material, material_source, box:[x,y,w,h]}`，坐标归一化。任务详情回包包含最新可用场景清单中的 `scene_materials`。
+- `POST /api/tasks/{id}/calibration-refs/upload?name=…[&from=refs/annotated/…jpg]` 接收不超过 50 MB 的图片字节并返回 `{entry}`；带 `from`（从参考库点选的标注图）时原样拷那张标注图，不重新压缩。`PUT /api/tasks/{id}/calibration-refs/{ref_id}` 保存 `{regions}` 并返回 `{entry}`（旧的 `in_library` 字段不再需要，传了也忽略）。`DELETE` 删除任务里的图和裁图。三种写入均校验来源，并用服务锁保护任务记录。
 - 每轮排队时固定该轮所用的任务参考图片和框。匹配采用场景原名精确匹配、参考库分组关键词匹配、任务新材质名称包含匹配。每个场景材质最多取 2 张任务裁图。无匹配的新材质裁图作为「其他参考」，未画框的整图作为「整体参考」。每张选中的裁图附平均 D65 Lab。该轮的 `task_refs_used` 保存实际使用的 `{id,region_index}`，整图序号为 `null`，从 0 开始计框。
-- 勾选「也加入参考库」保存时，参考库 `annotated` 保存独立副本，副本只含 `material_source == "library"` 的框。任务参考在该任务的中间文件清理时释放。
+- ~~勾选「也加入参考库」保存时，参考库 `annotated` 保存独立副本，副本只含 `material_source == "library"` 的框。~~ 1.7.1 起改为每张都自动收进参考库，见 §15.14。任务参考在该任务的中间文件清理时释放，参考库里的那张保留。
 
 ## 12. 打光（v0.3，2026-11-20 用户定）
 
@@ -536,3 +536,230 @@ render 任务新增字段：
 - 顶部状态片：本机时同以前；渲染机时显示「渲染机 <名字>」，附「连接中」「连不上」「要连接码」「Max 未打开」「忙」。点开是渲染位置面板：本机 Max、自动发现和连过的渲染机（标签：空闲、忙 · N 个任务、Max 未打开、要连接码、缺白底模板、连不上），手动添加，以及连接码输入。渲染机时不显示「启动 Max」。
 - 用渲染机时，首页「先完成本机设置」提示不再要求本机 Max 和模板。
 - 本机设置「渲染机」卡片：设为渲染机、连接码（可换）、电脑名和 IP、自检（后台服务、Max 程序、插件、模板、Max 已打开并连上、防火墙、开机自启）、已连接过的电脑、断开所有电脑、停止共享。
+
+## 15. 画布（v1.5，2026-11-22 用户定：只做生图和连接生图 API，交互参考 LibTV，精简）
+
+- 入口：左侧竖栏「画布」（`#canvas`），整页无限画布。
+- 开源依赖：Drawflow 0.0.60（MIT，`web/vendor/drawflow/drawflow.js` 原样），负责节点拖动、连线、平移。`web/canvas.js` 用子类改写：
+  - 滚轮以鼠标为中心缩放（0.2–2.5）；
+  - 按钮缩放以画面中心；
+  - 去掉右键删除圆点；
+  - Delete 走可撤销删除。
+  节点外观和样式全部自己写，不用它的 CSS；容器不能带别的 class（Drawflow 按第一个 class 判断点的是不是空白处）。
+- 节点只有两种：
+  - `upload`（拖入、上传、粘贴的图，只有输出圆点）；
+  - `gen`（生图：提示词、比例、张数，有输入和输出圆点）。
+  每个节点记 `results`（多次生成累积）和 `current`（当前显示的那张），下游的参考图 = 连进来的节点各自的 `current`。
+- 交互：
+  - 双击空白处新建生图节点；
+  - 从圆点拉线到别的节点就是参考；拉到空白处松手，就在那里新建一个连好线的生图节点；
+  - 「继续生成」在右侧新建并连好；
+  - 拖空白处平移，自动保存（0.5 秒防抖）。
+- 接口：
+  - 画布内容：`GET/PUT /api/canvas`（`board.json`：`view`、`seq`、`nodes`、`edges`）。
+  - 图片：`POST /api/canvas/files`（原始字节，最大 50 MB）、`POST /api/canvas/files/paths`（桌面拖入的本机路径）、`GET /api/canvas/files/<32位十六进制>.<扩展名>`。
+  - 生成：`POST /api/canvas/generate {node, prompt, ratio, count, refs}` 在后台线程生成，同时最多 4 个，返回任务记录；`GET /api/canvas/runs/<id>` 查状态，`state` 为 running、done 或 failed，完成后 `files` 列出结果。程序重启时，还在 running 的记录改成 failed，可以重试。
+  - 其他：`POST /api/canvas/reveal` 在资源管理器里选中图片。
+  - 设置：`GET/POST /api/canvas/settings`；`POST /api/canvas/models` 拉模型列表，像生图的模型排在前面。
+- 生图接口（`server/image_gen.py`）：
+  - 设置存在 `image_api.json`（`base_url`、`model`、`mode`、`reuse_ai_key`）。Key 用 DPAPI 加密存在 `%APPDATA%\whitebg-studio\image_key.bin`；没填时沿用 AI 设置里的中转站地址和 Key。
+  - 接口类型：
+    - `images`：没有参考图走 `/images/generations`，有参考图走 `/images/edits`（多张参考一起传）；比例换成 size（1:1→1024x1024，3:4、9:16→1024x1536，4:3、16:9→1536x1024）。
+    - `chat`：`/chat/completions`，参考图用 data URL；从 `message.images`、内容里的 data URL 或图片链接取图。
+    - `auto`：模型名含 gemini、banana、nano、4o-image、image-preview、flash-image、chat 时走 chat，否则走 images。
+  - 张数按并发的单张请求实现。错误信息里不出现 Key。
+
+### 15.1 1.5.1 深色版（2026-11-22 用户定）
+
+- **外观**：画布改成深色。节点是图片卡片，宽 336px，正好 14 个格栅宽；名字和状态标在卡片上方，左右是「+」连接点，位置在卡片垂直中间。
+- **输入面板**：不再放在节点里，改成点生图节点时出现在它下方的浮层，用屏幕坐标，不跟着缩放。
+  - 内容：风格、配色、构图、相机四个快捷预设；上传、画布参考、预设提示词；带编号的参考图；提示词；模型；「比例 · 画质 · 尺寸 · 张数」。
+  - 下面放不下时，画布自动往上平移。
+  - 弹层按上下哪边空间够决定往哪边弹。
+  - 预设在 `web/canvas-presets.js`。
+- **参数**：生成参数新增 `quality`（standard、high）和 `resolution`（1K、2K、4K），比例加了 2:3 和 3:2。
+  - gpt-image、dall-e 只用固定尺寸（1024x1024、1024x1536、1536x1024）。高清画质时 gpt-image 传 `quality=high`，dall-e 传 `hd`。
+  - 其他模型按「长边 1024、2048、4096 + 比例」算出宽高，取 64 的倍数。
+  - 对话接口把比例、分辨率、高清写进提示词。
+- **多张结果**：节点空着时，第一张进这个节点；其余每张一个新节点，用 `stackBelow` 在原节点下面同一列纵向排开（间隔 48，碰到别的节点往下跳），复制原节点的生成参数和入边。
+  - 1.5.0 存下来的一个节点多张，在载入时也这样拆开。
+- **格栅对齐**：格栅 24px。新建、生成、上传、继续生成的位置都对齐；拖动松手时吸附到最近的格栅点，有 160ms 过渡。卡片高度也取格栅整数倍，上限向下取整。
+- **连线动效**：用 MutationObserver 给每条 `.main-path` 后面加一条 `.cv-flow` 路径，同步 `d`。这条路径用 `stroke-dasharray` 加 `stroke-dashoffset` 动画做出流动的蓝光，不响应鼠标。
+
+### 15.2 1.5.2 项目、多画布、对齐、打组（2026-11-22 用户定）
+
+- **输入面板精简**：去掉风格、配色、构图、相机那一行。「提示词预设」改成：自己存的预设（`prefs.json` 的 `presets`，最多 60 条，去重）+ 几条内置常用写法（`web/canvas-presets.js` 的 `BUILTIN_PRESETS`）。
+- **记住参数**：比例、画质、尺寸、张数改动时写进 `canvas/prefs.json` 的 `gen`（防抖 400ms），新建节点用它做默认值；已有节点保留自己的参数。服务端只接受合法值。
+- **存储**：`exchange/canvas/` 下
+  - `projects/<12 位 hex>/project.json`（名字、画布列表）、`canvases/<8 位 hex>.json`（节点、连线、视图、`groups`、`seq`）、`images/`（这个项目的全部图片）；
+  - `prefs.json`（`gen`、`presets`、`last` = 上次打开的项目和画布）；`runs/` 生成记录；`trash/` 删掉的项目和画布。
+  - 旧的 `board.json` + `files/` 第一次启动时搬进「我的项目 / 画布 1」。画布文件夹在软件运行时被删掉，用到时会重建。
+  - 接口：`/api/canvas/projects`（GET/POST）、`projects/<pid>`（PUT/DELETE）、`projects/<pid>/restore`、`projects/<pid>/canvases[/<cid>[/board]]`、`projects/<pid>/files[/paths|/<name>]`、`reveal {project?, file?}`、`prefs`；`generate` 要带 `project`，参考图和结果都在这个项目里。
+- **顶栏**（`web/canvas-projects.js`）：高 44px，项目名按钮、画布标签（点切换、+ 新建、双击改名、× 删除，最后一张不能删）、空白（拖动窗口）、生图接口状态。深色面板距窗口上沿 8px，桌面窗口里右边留 122px 给窗口按钮，窗口按钮在画布页换成深色。
+- **鼠标**：Drawflow 的 `click` 改写——左键空白处框选（不再平移），中键平移，左键节点交给画布自己的拖动；鼠标样式：空白 `default`、节点和组框 `grab`、拖动和平移 `grabbing`。
+- **拖动与对齐**（`alignGuides`）：拖动中的外框和其他节点比较左/中/右、上/中/下，阈值 6 屏幕像素（除以缩放）；对上的方向贴齐并画粉色虚线，没对上的方向按格栅取整。Alt 不对齐。多选一起拖，相对位置不变。
+- **选择**：框选按屏幕矩形相交；Shift/Ctrl 加减选；Ctrl+A、Esc、Delete（多选删除可撤销）。单选生图节点出输入面板；多选出虚线外框和「打组」按钮。
+- **打组**：`groups: [{id, name, nodes}]`，一个节点只属于一个组。组框（`groupFrame`：四周留 24，上面多留 48 放组名）画在画布里最底层，跟着缩放；拖组框整组移动，双击组名改名；成员少于 2 个的组自动去掉。选中整组时组框高亮、按钮变成「解组」（Ctrl+G）。
+
+### 15.3 1.5.3 生图渠道（2026-11-22 用户定）
+
+- **为什么**：用户会用不同站点接生图模型，或者一个站点一个 Key 只能接一种模型，想接好几种。所以把「生图设置」改成可以存多套的「渠道」，可以改名。
+- **存储**（`server/image_gen.py` 的 `ImageAPISettings`）：
+  - `image_api.json`：`{version: 2, active: 渠道号, channels: [{id(8 位 hex), name, base_url, model, mode, reuse_ai_key, models(拉到的模型列表，最多 300)}]}`，最多 30 个渠道。
+  - 每个渠道的 Key 用 DPAPI 加密，存在 `%APPDATA%\whitebg-studio\image_keys\<渠道号>.bin`；删除渠道时一起删。
+  - 旧版单套设置（`image_api.json` 平铺字段 + `image_key.bin`）第一次读取时变成「渠道 1」，Key 文件挪过去。
+  - 新建渠道默认叫「渠道 N」（N 接着现有「渠道 数字」往下数），新建、复制的渠道成为当前渠道。
+- **接口**：`GET/POST /api/canvas/settings`（POST 不带 id 是新建，返回值的 `saved` 是渠道号）；`DELETE /api/canvas/settings/channels/<id>`；`POST …/<id>/activate`；`POST …/<id>/copy`（连 Key）；`POST /api/canvas/models` 带 `id` 时用那个渠道存的 Key，不带 id 时不拿别的渠道的 Key。
+- **生成**：`/api/canvas/generate` 带 `channel`，生成记录里也存 `channel`。渠道被删了时这次生成失败，提示重新选择。
+- **界面**：
+  - 「生图渠道」弹窗（`web/canvas-channels.js`，深色）：左边渠道列表（名字、模型 · 站点、「正在用」），右边编辑（渠道名、接口地址、Key、沿用、模型 + 拉到的生图模型标签、接口类型），下面删除（连点两次）、复制为新渠道、关闭、保存。改了没保存就切换会先提示，再点一次才放弃。
+  - 输入面板的模型按钮显示「渠道名 · 模型」，点开列出渠道；选了写进节点的 `gen.channel`，并设为当前渠道（新节点默认用当前渠道）。顶栏右边显示当前渠道。
+
+### 15.4 1.5.4 图片接口返回的解析（2026-11-22）
+
+- **起因**：用户用即梦渠道（seedream-5.5，图片接口，3:4、2K）生成失败，只提示「生图接口没有返回图片」，看不出接口到底回了什么。
+- **解析**：图片接口改用 `with_raw_response` 拿原始返回，自己解析（`extract_images_image`）：
+  - 认 `data[]` 或 `data.data[]`、`images[]` 里的 `b64_json`、`b64`、`base64`、`url`、`image_url`（字符串或 `{url}`）、`image`，以及 data URL、纯 base64；
+  - 某张图失败时（火山方舟写法 `data[].error`）、顶层 `error`：报「生图失败：原因」；
+  - 返回任务号（`task_id` 或 `status` 是排队中、处理中）：说明是异步任务，暂不支持；
+  - 都认不出：报「生图接口没有返回图片。接口返回：…」，带最多 300 字的原话（长 base64 截掉、去掉 Key）。
+  - 对话接口没出图时，也带上模型回复的前 120 字。
+- **即梦尺寸**：模型名带 seedream、即梦、jimeng 的，按火山方舟推荐的 2K 尺寸（1:1 2048x2048、4:3 2304x1728、3:4 1728x2304、16:9 2560x1440、9:16 1440x2560、3:2 2496x1664、2:3 1664x2496）；4K 取两倍；4.5 以后总像素最少 2560x1440，所以 1K 也按 2K 出。以前 3:4 2K 算出来是 1536x2048（约 315 万像素），低于这个下限。
+
+### 15.5 1.5.5 异步生图任务（2026-11-22）
+
+- **实测到的**（用户同意后用即梦渠道真实发了一次）：用户的中转站（FluxPort）对较重的请求自动改成异步（`execution_mode_reason: heavy_request_auto_async`）：
+  - 提交回 HTTP 202，`object: image.task`，有 `id`/`task_id`、`status: queued`、`poll_url: /v1/images/tasks/<任务号>`、`poll_after_ms: 2000`、`assets: []`；
+  - 查询时 `status` 变成 running，结束时是成功（图在 `assets` 里）或失败；这次是 `uncertain`（`error_code: image_result_uncertain`，「生成服务暂不可用」，没扣费），中转站要求先别重复提交、拿任务号找客服。
+- **做法**（`ImageGenerator._wait_task`）：
+  - 返回是异步任务（`object=image.task`、有 `poll_url`，或有 `task_id` 且状态是排队中/处理中）时，按 `poll_after_ms`（1～10 秒，默认 2 秒）去查 `poll_url`（没有就用 `result_url` 或 `images/tasks/<任务号>`），最多等 10 分钟；
+  - 只查和生图接口同一个站点的地址，Key 也只发给这个站点；`assets` 里的图片链接，相对地址按这个站点补全，同站点带 Key 下载，别的站点不带；
+  - 失败时报原因并带上任务号；`uncertain` 报「中转站说这次结果还没确认：原因（任务号 …）」，不自动重试。
+
+### 15.6 1.5.6 按 中转站（FluxPort）文档接即梦和 Gemini（2026-11-22）
+
+- **即梦（seedream）**：图片接口不传像素 `size`，传 `resolution`（1K、2K，4K 按 2K）+ 画幅；画幅字段 seedream-5.0 系列叫 `ratio`，其他（5.5 等）叫 `aspect_ratio`（`seedream_params`）。参考图走 `/images/edits` multipart，字段 `image[]`。
+- **Gemini 原生**：新接口类型 `gemini`。`POST {根地址}/v1beta/models/{模型}:generateContent`（根地址是接口地址去掉结尾的 `/v1`），`contents[].parts` 里放文字和 `inlineData`（裸 base64），`generationConfig` 是 `responseModalities: [TEXT, IMAGE]` + `imageConfig: {aspectRatio, imageSize}`；结果读 `candidates[].content.parts[].inlineData` 或 `fileData.fileUri`，被拦截时说明原因。
+- **生成请求**：带 `Idempotency-Key: panda-<随机>`；SDK 不自动重试（`max_retries=0`），免得重复扣费。
+- **异步任务**（`_wait_task`）：查 `status_url`（没有就 `poll_url`、`result_url`），间隔取 `poll_after_ms`（2～10 秒）；queued、dispatching、running 继续等；success 读 assets，没有 assets 再读 `result_url`；failed、uncertain、client_disconnected、paused、canceled、未知状态，或 `auto_poll:false`、`poll_after_ms:0` 时停下并说明原因（带任务号，没扣费时写「没扣费」）；查询遇 429、5xx、断网按 5、10、20、40、60 秒退避，最多 5 次；最多等 20 分钟（不取消任务）。下载 assets 优先 `signed_url`，其次 `download_url`、`url`，同站点带 Key，别的站点不带。
+- **图片接口被拒**（`Images API is not supported`）：这次生成自动改走 Gemini 原生（Gemini 类模型）或对话接口（其他）。
+- **渠道模板**：生图渠道弹窗顶上「即梦 5.5」（`https://api.ai-media.vip/v1`、seedream-5.5、图片接口）和「香蕉 Gemini 3.1」（同地址、gemini-3.1-flash-image-preview、Gemini 原生），点一下填好，只剩填 Key；新渠道或还叫「渠道 N」的顺便改名。
+
+### 15.7 1.5.7 渠道自己选比例的传法、额外参数，去掉写死的模板（2026-11-22）
+
+- **起因**：用户反馈「比例不生效」：「即梦5.5 副本」（seedream-5.0-pro）选 3:4、1:1 出来都是 2368x1776（4:3），说明这家中转站没认按文档传的 `ratio`；香蕉（Gemini 原生）3:4 出 1792x2400，是对的。用户要的是能接别家中转站、别的图像模型，1.5.6 按模型名写死即梦参数、加两个写死的模板等于圈死了。
+- **渠道新增两项**（`image_api.json` 的渠道里）：
+  - `size_style`：`auto`（gpt-image / dall-e 只传它们的标准 size；其他模型 size 像素 + aspect_ratio + ratio + resolution 全带上，同一个比例）、`size`、`aspect_ratio`（+ resolution）、`ratio`（+ resolution）、`all`。`size_params()` 按它算。Gemini 原生固定 `imageConfig.aspectRatio / imageSize`，对话接口写进提示词，都不受它影响。
+  - `extra`：JSON 对象，每次请求原样并进请求体（Gemini 原生逐层合并，对话接口放 extra_body）；不能有 model、prompt、image、images、n、contents；最长 4000 字。
+- **去掉**：按模型名判断即梦的 `seedream_params`、即梦不传 size 的规则、弹窗里写死的两个中转站模板。参考图一律按列表发（字段 `image[]`），dall-e 单张时发 `image`。
+- 渠道弹窗的左侧列表在弹窗往下滚时停在原处。
+
+### 15.8 1.5.8 去掉背景格栅点（2026-11-22 用户定）
+
+- 画布背景改成纯色（`--cv-bg`），不再画 24px 的格栅点；节点位置仍按 24px 格子对齐（新建、生成、拖动没对上别的节点时）。
+
+### 15.9 1.5.9 分组连线、@ 引用参考图（2026-11-22 用户定）
+
+- **分组连线**：分组上存 `links: [生图节点号]`（和 `nodes` 一起存在画布文件的 `groups` 里）。
+  - 组框右上角（组名那一行，`top:24px`）有「+」，拖出虚线：松手在生图节点上就连上；松手在空白处就在那里新建生图节点再连上；不能连到上传的图、不能连到组里自己的节点。
+  - 线画在画布里组框上面、节点下面的 `svg.cv-glinks`：从组框右边 (x+w, y+24) 到节点左边「+」的圆心 (x-23, y+h/2)，和节点连线一样的曲线（`curvePath`）加流动蓝光；节点移动、卡片变高、组变化时重画。
+  - 点线选中（红色），Delete 断开；面板里分组那一圈的 × 也能断开。删节点时清掉指向它的连线（撤销能恢复）；多张结果的新节点也连上同一组；解组时改成组里每张图单独连到目标节点。
+- **参考图顺序**（`refItems`）：先是连进来的分组里有图的节点（每组按位置从上到下、从左到右），再是单独连的，去重。面板编号、发给接口的顺序都按它。
+- **@ 引用**：提示词框里输入 @ 弹出列表（已连的参考图带「图N」编号，后面是画布上别的图，选了自动连上），↑↓ 选、回车或 Tab 确定、Esc 关；插入「@图片名 」。生成时 `resolveMentions` 把 @图片名（空格可有可无）换成按参考图顺序的「图N」，并在开头加一句「参考图按顺序编号：图1～图N。」；不在参考图里的 @ 原样留着。节点里存的还是带 @图片名 的原文。
+
+### 15.10 1.6.0 比例写死、连线可删、生图中的样子（2026-11-22 用户定）
+
+- **比例写死**（不用每个渠道去选）：
+  - 查到用户新加的「GPT」渠道（另一家中转站的 gpt-image-2.6-sunburst）要 3:4、发了 size=1024x1536，却出了 1536x1024 横图：这家不认尺寸参数。
+  - 图片接口的提示词末尾加「画面比例 3:4（竖版）。」（`ratio_hint`）；尺寸参数照旧（gpt-image 标准尺寸；其他模型 size + aspect_ratio + ratio + resolution）。
+  - 出图后 `fit_ratio`：和要的比例差不到 1.2% 不动；横竖方向反了不裁，在生成记录里提示；方向对、裁掉不到四分之一的，居中裁到要的比例（png 存 png，jpg 质量 95）。
+  - 生图渠道弹窗去掉「比例怎么传」；额外参数收进「高级」。
+- **@ 只列已连上的参考图**，不再列画布上别的图。
+- **分组连线**：组的「+」在组框右边正中间、框外 34px（`GROUP_PORT`），一小段虚线连着框；组里的图在面板参考图栏里平铺，每张可点 × 去掉（存在分组的 `skip[目标节点]`，「画布参考」里点一下能加回来）；都去掉了就断开。
+- **连线选中删除**：每条连线后面加一条透明的粗线 `.cv-hit`（屏幕上约 16px，按缩放换算 `--cv-hit`），点中就选中；选中的线中间出 × 按钮（`.cv-line-del`），点它或按 Delete 删除；分组连线同样（`.cv-ghit`）。透明粗线必须排在主线后面：Drawflow 移动节点时只更新连线的第一个子元素。
+- **节点框按比例**：生图节点的图片区高度按 `gen.ratio`（预览），图片在框里完整显示；上传的图按图片本身。参数按钮和比例选项前面的小框按比例画（`ratioIcon`）。
+- **生图中**：不显示计时；图片中间「生图中 进度 xx%」（`progressAt`：到平时用时约 85%，最多 95%，只增不减；平时用时按渠道记在本机 `localStorage` 的 `cv-gen-seconds`，默认 45 秒）；扫光改成两倍宽一层里两道一样的光平移一道的距离（无缝循环）；卡片内容没变就不重画，动画不会被打断；节点一圈慢慢转的淡蓝流光（`@property --cv-angle` + conic-gradient）和轻微呼吸外发光。
+
+### 15.11 1.6.1 边缘流光、连线框选删除、新的开场界面（2026-11-22 用户定）
+
+- **边缘流光**（`.cv-flowlight`，参考用户发的 Apple Intelligence 跑马灯图）：两层（`wide` 柔和宽光、`rim` 贴边细光），每层里一块比卡片大的彩色锥形渐变（紫、粉、橙、黄、蓝）用 `transform: rotate` 慢慢转（6.5 秒一圈），外面的遮罩只露出四周一圈、往中间渐隐；宽光再轻轻呼吸（透明度）。只用 transform 和透明度做动画、不重画，所以不卡。生图中的节点用它替换原来的扫光、外圈转光和呼吸外发光；进度文字在上面。
+- **连线选中和删除**：去掉线中间的 × 按钮。选中的线存在 `pickedLines`（普通连线 `e:起点>终点`，分组连线 `g:分组>终点`），选中时变红；点线或线旁的透明粗线选中（Shift/Ctrl 加选），框选时线上每隔几像素取一个点，落进框里的线也选中（和节点一起）。Delete 删除选中的节点和连线，提示里可以撤销（连线也能恢复）。线的点击由画布自己处理，不再用 Drawflow 的连线选中。
+- **开场界面**：空画布中间的「开始创作」卡片：黑底、边缘流光、外面一圈反向慢转的彩色光晕（径向遮罩淡出，层级在卡片黑底下面，只在卡片外露出）；渐变图标、标题、一句说明、「新建图片节点」「上传图片」两个按钮，底下三条提示（拖入图片当参考图、中键拖动画布、@ 引用图片）。卡片外的区域不挡鼠标。
+
+### 15.12 1.6.2 点节点居中放大、重新生成、空节点多张成脑图、Windows 分屏（2026-11-22 用户定）
+
+- **单击节点居中放大**（`focusNode`）：单击（没拖动）选中节点时，节点（生图节点连同下面的输入面板）居中，缩放到正好放满画面，最大 150%，320ms 平滑过渡（`animateView`，新的动画顶掉旧的）。拖动、框选、Shift 多选不触发。
+- **重新生成**：有图的生图节点，工具条多「重新生成」，面板按钮也叫「重新生成」；生成时一律只要 1 张，结果追加到 `results` 并设为当前（替换显示，旧图文件不删）。用户确认取消了「在原图上改图分出节点」。
+- **空节点多张 → 脑图**（`branch` + `branchLayout`）：空节点、张数 ≥ 2 时，这个节点当提示词节点不放图；右边隔 120px 立刻建好 N 个节点，纵向间隔 48、整列上下居中对齐提示词节点、对齐格栅；那一列有节点挡着就整列挪到它们下面。每个子节点连着提示词节点，各自单独请求一次（每次 1 张，参考图和提示词用提示词节点的），各自显示流光和进度；分出的节点看不全时画面平移（必要时缩小）装下。空节点只生成 1 张时，图放进节点自己。
+- **「＋ 图片节点」**：放在画面中间；中间有节点挡着就往右挪到空位。
+- **Windows 分屏**（`desktop.pyw`）：
+  - pywebview 自带的拖动是网页里一点点挪窗口，不走系统「移动窗口」，所以拖到屏幕边上不会分屏；无边框窗体也缺系统窗口样式。
+  - 现在：窗口补上 WS_CAPTION、WS_THICKFRAME、WS_SYSMENU、WS_MINIMIZEBOX、WS_MAXIMIZEBOX；用 `SetWindowSubclass` 在 WM_NCCALCSIZE 里让整个窗口都是网页（不画系统边框和标题栏），系统最大化时把多出的一圈边框收回，内容正好铺满工作区；WinForms 把样式冲掉时改大小会补回。
+  - 拖动：顶部标题区（`win-drag`）按下时调 `window_start_drag`，在界面线程里 `ReleaseCapture` + `PostMessage(WM_NCLBUTTONDOWN, HTCAPTION)`，交给系统移动窗口 —— 拖到屏幕边缘分屏、Win11 拖到顶部选布局、拖动最大化窗口自动还原、Win+方向键都能用。双击标题区（两次按下间隔 < 450ms、位置相近）切换最大化。
+  - 最大化 / 还原改用系统的 `ShowWindow`；窗口大小变化时网页问一下是否最大化，更新图标和圆角描边。最大化时去掉圆角裁剪。
+  - 不支持：Win11 鼠标停在最大化按钮上弹出的布局菜单（按钮是网页画的）。
+
+### 15.13 1.7.0 整体审查后的 10 轮优化（2026-11-23，审查和方案见 docs/整体审查与优化方案.md）
+
+- **首页提示**（`web/settings.js` 的 `banner`）：按 `/api/settings` 的 `checks` 说缺什么——缺 3ds Max：「先指定 3ds Max」；白底模板文件没了：「白底模板文件不见了」（重新安装能补回）；都缺：「本机还缺 3ds Max 和白底模板」。选了内网渲染机（`ready` 为真）不提示。设置页 3ds Max 卡片多一行白底模板状态。
+- **标题让位**：桌面窗口里，把标题放在正文里的页面（`.page-main > .page-header-inline:first-child`，参考库、本机设置）标题往下让 46px，右上角窗口按钮不压住「添加并标注…」。
+- **画布缩略图**：`GET /api/canvas/projects/<项目>/files/<文件>?w=<宽>` 给缩略图：两档（`THUMB_SIZES = (256, 1280)`，宽 > 256 用 1280），长边缩到这个尺寸，WebP 质量 86，缓存在 `projects/<项目>/thumbs/<文件名>-<档>.webp`（原图更新时间比缓存新就重做）；原图本身长边 ≤ 档位 × 1.25、或缩图失败，直接给原图。节点用 1280，参考图栏、@ 列表、画布参考弹层、项目卡片用 256；看大图、复制图片、生图用原图。图片（原图和缩略图）响应 `Cache-Control: private, max-age=604800`（文件名随机，内容不会变）。
+- **撤销 / 重做**（`canvas.js`）：每次 `save()` 后记一步（`commit`）：节点（含位置、提示词、设置）、连线、分组，最多 60 步；改提示词（`save(800)`）停 800ms 才记一步。生图节点的 `results`、`current`、`run` 不算改动：撤销时节点还在就用它最新的图和生成状态，之前在过的节点用记下的最新值（`genCache`），所以撤销不会撤掉已经出的图。多步合一步用 `batch`（新建并连线、分出脑图、删除、粘贴、老版本拆分）。撤销后节点号不回退（`highWater`），不会和撤销掉的节点撞号。删除提示条的「撤销」：删完没再改过就撤销这一步，之后又改过就提示用 Ctrl+Z。快捷键 Ctrl+Z、Ctrl+Shift+Z / Ctrl+Y，工具栏有两个按钮（没得撤销 / 重做时变灰）。切换画布清空撤销历史。
+- **复制粘贴节点**：Ctrl+C（选中节点、焦点不在输入框、没有选中文字）往系统剪贴板写一行标记「Panda Studio 画布节点 ×N（时间码）」，内存里记下节点（含提示词、设置、图）、选中节点之间的连线、整组都选中的分组、从外面连进来的参考线和分组连线。Ctrl+V 时剪贴板文字等于标记才粘节点，否则照旧把剪贴板里的图片粘成图片节点。同一张画布里粘贴：每粘一次多错开 48；外面连进来的参考线、分组连线也连上。粘到别的画布：放在画面中间；别的项目：先 `POST /api/canvas/projects/<项目>/files/copy {from, files}` 把图片拷过去（文件名不变，最多 200 张，原项目里没有的跳过）。还在生成的节点只复制提示词和设置。Ctrl+D 原地复制一份（错开 48，不动剪贴板）。粘贴算一步撤销。
+- **复制图片**（`web/clipboard.js`）：`navigator.clipboard.write` + `ClipboardItem({'image/png': Promise})`，非 PNG 先在页面里画一遍转成 PNG。节点工具条多「复制图片」，看大图（`lightbox.js`，全软件共用）工具栏多「复制图片」，按钮上显示「已复制」或「复制失败」。
+- **快捷键说明**：画布工具栏最右「?」（或按 ? 键）弹出两栏：鼠标、键盘；Esc 或点别处关。焦点不在画布上（比如刚点过工具栏按钮）时 Delete、Esc、Ctrl+G、Ctrl+A 也能用（document 上的 keydown，画布自己有焦点时仍由 Drawflow 那边处理）。
+- **失败直接重试**：失败的生图节点在图片区域盖一层：「生成失败」+ 原因（最多 140 字、三行，完整原因在提示气泡和面板里）+「重试」。有图的节点（重新生成失败）只在底部压一条「重新生成失败」+「重试」「忽略」，原图还看得见。重试只重做这一个节点（`run(id,{single:true})`，空节点张数 ≥ 2 也不再分出新节点）；「忽略」把 `run` 清掉。只有按钮区不能拖，节点其余地方照常拖动。
+- **关窗口不丢改动**：网页右上角关闭按钮先调各页面登记在 `window.__whitebgBeforeClose` 的「立刻保存」（任务页 `flush`、画布 `flush` + 设置偏好），最多等 3 秒，再 `window_close`。Alt+F4、任务栏关闭：`desktop.pyw` 的 `closing` 事件第一次先取消关闭，后台线程 `evaluate_js` 调 `window.__whitebgCloseSoon()`（网页存好后自己关），4 秒内没关上就直接关（closing 事件在界面线程同步执行，不能在里面等网页）。浏览器里关标签页：`pagehide` 用 `fetch keepalive` 补发画布。
+- **回到上次的页面**：进页面时记 `localStorage['whitebg.page']`（只记 `#canvas`、`#refs`、`#settings`，其余记首页）；打开软件地址没有 # 时用 `history.replaceState` 换成上次的页面再路由。任务页不记（任务可能已删）。
+- **生成记录清理**：`CanvasStore._recover`（启动时）删掉 `canvas/runs` 里 30 天前（`RUN_KEEP_DAYS`，按文件修改时间）的记录，其余还在 running 的标成失败。启动时没有正在生成的任务，不会删到在用的记录；图片在项目文件夹里不受影响。删掉的项目（`canvas/trash`）不自动清。
+
+### 15.14 1.7.1 AI 校准的材质参考自动进参考库（2026-11-23 用户定）
+
+用户要求：每次 AI 校准时选的材质参考图，都能在参考库里对应材质下直接拿到；以后加的也一样。
+
+- **自动收进参考库**（`RefLibrary.absorb`，`Calibration.absorb_ref`）：本任务材质参考每次保存框，都收进参考库的标注参考图（`annotated`），不再有「也加入参考库」的勾。每个框按材质归组：参考库材质直接用；场景材质、新材质先找同名分组，再按分组关键词归（`material_key`，如「柜门 胡桃饰面」→ 胡桃木），都对不上就新建同名分组（关键词就是这个名字，去掉文件名里不能用的字符；整理后不能用的跳过）。没有框的整体参考不收。参考库写失败不影响任务保存。
+- **不重复**：同一张图（JPEG 内容一样，按 sha256 比，记在 `annotated[].sha`）在别的任务里又用了，并进已有的那一张；从参考库标注图点选来的（`library_file`）并回那一张。合并规则：这次出现的材质，框换成这次的；别的材质的框保留。任务里删掉材质参考，参考库里的那张保留（要删去参考库页删）。
+- **「从参考库选」**：每个材质先列标注过的框（裁图，标「标注」，从 AI 校准收进来的标「校准用过」），再列认可的图。选标注的框：原样拷那张标注图（`from`），框直接画好并先存上，再打开框选让用户确认；同一张图选了几个材质的框合成一张。
+- **参考库页**：从 AI 校准收进来的裁图在对应材质下标「校准」。
+- **补导入**（`Calibration.sync_library`）：软件启动时后台把以前 AI 校准里加过、还没收进参考库的材质参考（有框、没有 `library_synced`）补进去，只跑一次（收过的有标记）。
+- **AI 选图**：本任务自己的材质参考已经作为「本任务参考」给 AI，从参考库挑标注裁图时跳过这几张（`library_file` 相同的），不重复占名额。
+
+### 15.15 1.7.2 安全加固、不占 C 盘、清单保留成果与工程基建（2026-11-26）
+
+- **单一版本源与打包净化**：仓库根目录新增 `VERSION`；`build.ps1` 传 `/DAppVersion` 给 Inno Setup，`whitebg.spec` 生成 exe 版本资源，`/api/health` 返回 `version`，`web/shell.js` 动态写入 `#app-version`。打包改用干净的 `config.default.json` 并剔除 `refs/library.json`、`refs/builtin.json` 中的本机绝对 `source` 路径；排除 `setuptools`/`aiohttp`/`PIL._avif`/`PIL._imagingtk`/多架构冗余库；构建后扫描 dist 敏感词。`installer.iss` 移除管理员覆盖选项、选 C 盘弹提示。
+- **不占 C 盘**：
+  - 加密密钥（`ai_key.bin`、`image_key.bin`、`image_keys/<cid>.bin`）默认存 `<root>\secrets\`（CurrentUser DPAPI 不变）；运行真实程序根目录时自动执行校验迁移（复制→字节核对→原子替换→再核对→删 `%APPDATA%\whitebg-studio\` 原文件），测试隔离目录不触发迁移。
+  - `desktop.pyw` 以 `private_mode=False, storage_path=<root>\webview-data` 启动 WebView2，既保留 `localStorage` 又将浏览器缓存限定在安装目录。
+- **清单增删/排序保留成果与删除撤销**：`server/core.py` 的 `_update()` 按 `item_id` 对应原条目，通过 `move_files()` 两阶段临时名原子重命名 `RESULT_FILES`（失败回滚），`renumbered_result()` 保留 `state`/`job_id` 并记录 `job_item` 供 `_merge()` 对齐，同时更新 `ai_calibration.accepted_overrides['items']`。删除条目暂存到 `tasks/<id>/removed/<item_id>/` 与 `task.removed_items`（保留最近 20 条），前端弹 10 秒撤销条，撤销时原样恢复。新增条目不触发 `lighting_changed`。
+- **通用缩略图**：`/api/file?path=...&w=<px>`（`w` 钳制 32..1024）经 `allowed_file` 校验后由 `Studio.thumb_file()` 按 `path+mtime_ns+size+w` 生成 WEBP 缓存于 `exchange\.thumbs`（启动清理 30 天前缓存），清单、任务卡、参考库、总览全部接入，灯箱与标注保持原图。
+- **前端网络健壮性**：新增 `web/api.js` 封装 `AbortController` 超时、中文网络/超时错误、顶部常驻 `.offline-banner` 断线横幅与指数退避、`readJsonSafe`/`uploadBlob` 统一上传解析；`route()` 限时中止挂起保存并不阻塞轮询。
+- **后端安全与稳定性**：
+  - 渲染机回传强制 `safe_output_rel()` 白名单校验（仅 `preview/`、`smallshots/`、`final/`、`calibration/round-N/` 下允许扩展名，拒绝 `task.json`）及收紧 `ABSOLUTE_RE`/盘符相对路径拦截；zip 解压按实际写入字节限流。
+  - `remote_client.py` 增加 `'sending'` 阶段与 `_sending` 集合消除切回本机竞态。
+  - `node_setup.py` 防火墙规则改为 `profile=domain,private` + `program=`；`render_node.py` 连接码 10 分钟 TTL（暴露 `code_expires_at`）、配对成功自动轮换、全局失败限流（20 次/10 分钟）、15 秒 handler 超时、并发信号量（16）、500 错误不回显内部异常。
+  - `ai_settings.py` / `image_gen.py` 公网强制 `https://`、换未保存不同源地址不带旧 Key、API POST/JSON 轮询禁止重定向、图片下载拦截内网/回环 SSRF 并在重定向时剥离鉴权头。
+  - Max 渲染期间由 `wb_core.LockRenewer` 守护线程每 180 秒刷新同 owner 锁文件（`pf_max_lock.ms` 同步 `PF_MAX_LOCK_FILE`）与心跳，优先加载内置 `max/pf_max_lock.ms`；`runner.py` 活跃渲染任务宽限 4 小时。
+  - `calibration.py` `await_round()` 改为退避轮询、缩小 `studio.lock` 持有区间，并按 `calibration_timeout_sec` 或作业消失自动超时解锁。
+
+### 15.16 1.8.0 稳定与流畅、白底纯白保障、可编辑材质参数与参考材质精准对应（2026-11-26）
+
+- **后端稳定与流畅（Phase 2）**：
+  - **收窄 `studio.lock` 与请求超时**（`server/app.py`、`server/core.py`、`server/cleanup.py`）：`Handler.timeout = 30`；所有 JSON 请求体与二进制上传流在 `studio.lock` 锁外读取校验；慢速目录浏览 `browse()`、扫描 `scan()`、图片解码与缩图、`deliver()` 大文件拷贝均移出 `studio.lock`，只读接口（`/api/health`、`/api/runner`、`/api/tasks`、`/api/refs`）不被入库或 NAS 扫描阻塞。
+  - **状态与任务读取缓存**（`server/runner.py`、`server/node_setup.py`、`server/core.py`）：`tasklist` 进程探测加 3 秒 TTL 缓存与独立锁，`netsh` 防火墙规则探测加 15 秒缓存与后台异步刷新；`Studio.load()` 按 `task.json` 的 `(mtime_ns, size)` 缓存深拷贝快照。
+  - **过期作业归档与无缝回查**（`server/cleanup.py`、`server/jobs.py`）：启动后台与每日清理将超过 30 天且任务非活跃的终态作业迁入 `exchange/jobs/archive/` 并维护 `exchange/jobs/archive/index.json`；`JobIndex` 先查活跃目录再回退归档索引，历史轮次与小样查看无缝衔接。
+  - **快速窗口启动与原子入库**（`desktop.pyw`、`server/core.py`）：桌面窗口立即打开，3ds Max 注册表探测、密钥迁移、参考库补导入、缩略图清理与过期作业归档延后到后台线程；`deliver()` 先将新成图/遮罩/清单写入 `sku/.staging-<uuid>/` 校验无误，再把同名旧文件移至 `sku/旧版/<timestamp>/` 并原子替换入 `sku/`，异常自动回滚，绝不在 `sku/` 留下 `.prev` 备份文件。
+- **前端流畅与低占用（Phase 2）**：
+  - **动画按需暂停与去冗余毛玻璃**（`web/style.css`、`web/task-state.js`、`web/app.js`）：进入任务页、画布页或窗口隐藏时在 `body` 挂 `bg-paused` / `page-hidden` 暂停底层光斑动画，去掉深色不透明面板多余 `backdrop-filter`。
+  - **FBX 单次解析与警告局部过滤**（`web/model/loaders.js`、`web/viewer.js`、`web/variants.js`、`web/app.js`）：预览 FBX 只解析一次并直接复用 Three.js 对象做多柜款式识别，识别后释放原始 `ArrayBuffer`；`console.warn` 过滤严格限定在 `fbxLoader.parse` 的 `try/finally` 内。
+  - **画布高频交互减负与轮询退避**（`web/canvas.js`、`web/canvas-model.js`、`web/lighting.js`、`web/runner.js`）：节点拖动缓存尺寸并用 `requestAnimationFrame` 合并重绘，流光仅在选中或生图中连线播放；移除 `lighting.js` 500ms 与 `runner.js` 5s 无条件 `setInterval`，改为脏状态、路由与可见性触发；画布生图轮询按活跃任务节流，连续失败自动停止并提示离线重试。
+- **白底纯白生成保障与深层材质识别**（`max/wb_runner.py`、`max/wb_core.py`、`tools/fake_runner.py`）：
+  - **预设加载保护**：调用 `renderPresets.LoadAll` 前快照并在加载后自动补回必需渲染元素（`遮罩_ID`、`遮罩_线框颜色`）及 Corona 环境反射贴图（`bg_overrideReflect` / `bg_texmapReflect`）。
+  - **纯白直视背景锁定与恢复**：渲染期间强制开启 `bg_overrideDirect = True`、`bg_colorDirect = RGB(255, 255, 255)` 并临时清空非纯白直视贴图（`bg_texmapDirect`），确保背面视角隐藏模板背景墙（`|azimuth| > 100°`）或自定义打光压暗环境 GI 时背景仍为纯白，渲染结束后完整还原渲染器原始属性。
+  - **环境反射关断与嵌套材质遍历**：`environment.reflection_strength_mul` 范围扩展至 `[0.0, 2.0]`（设为 `0` 时临时关闭 `bg_overrideReflect`，消除反射贴图对木纹/烤漆高光的污染）；递归支持 `Multimaterial` 与 `RaySwitch` 任意多层嵌套的清单提取与参数覆盖；导出预览（`export_preview`）与普通出图始终写入 `<task_dir>/preview/scene_manifest.json` 供界面即时读取。
+- **可编辑材质参数**（`server/materials.py`、`PUT /api/tasks/<id>/materials`、`web/materials.js`）：
+  - 任务页顶栏新增「材质参数」弹层，预览或小样完成后即列出场景全部材质（色块、类型、对象数、贴图名），未导出前也支持手动输入材质名预填；可逐材质调节色调微调（`-15°..+15°`）、颜色浓淡（`60%..140%`）、明亮程度（`50%..250%`）、明暗反差（`70%..130%`）、反光强度（`0%..200%`）、表面光泽（`-0.30..+0.30`），玻璃材质额外支持玻璃折射（`0%..150%`）、折射率（`1.30..1.80` 或留空沿用模型默认）、不透明程度（`50%..100%`），以及全局环境反光强度（`0%..200%`）。
+  - `effective_overrides(task)` 以 `ai_calibration.accepted_overrides` 为基线叠加手动 `task.material_overrides`，统一作用于出小样、正式渲染和 AI 校准起始轮；校准记录每轮新增「以此轮微调」载入该轮参数继续手调；切换打光清空 AI 采用轮次时保留用户手动材质参数。
+- **AI 校准精准对应参考材质**（`server/ref_library.py`、`server/calibration.py`、`web/materials.js`、`web/calibration.js`）：
+  - 升级 `material_key(name, library)` 多级匹配（精确匹配 → 去前后缀编号与饰面词 → 最长关键词优先 → 核心词反向匹配如「胡桃」→「胡桃木」→ 安全同义词表），严禁泛称「玻璃/清玻/茶玻」误配「长虹玻璃」。
+  - 支持任务级显式绑定 `task.material_bindings`（自动匹配 / 指定任意参考库分组 / `__none__` 不对照参考库），在「材质参数」下拉框与「AI 校准」参考对应摘要条中直接查看与修改。
+  - 未匹配到具体场景材质的任务框选参考不再静默丢弃（归入 `其他参考（<名称>）`）；12 张图片预算调整为小样+分区对照 → 本任务框选参考 → 参考库已标注裁图 → 已认可/候选材质参考 → 风格与主图参考 → 剩余名额才补同产品泛白底；每张参考图 `role` 明确写出对应场景材质名与目标 Lab，并向模型传入结构化 `material_reference_map` 与逐材质配色硬约束。

@@ -1,3 +1,4 @@
+import {copyImage} from './clipboard.js';
 // 比例按原图像素计算，平移以显示区域中心为原点。
 export const clampScale=(scale,fit)=>Math.max(fit,Math.min(8,scale));
 export function zoomAt({scale,x,y},nextScale,point){
@@ -15,7 +16,7 @@ export function openLightbox(items,startIndex=0){
 function createLightbox(){
   const dialog=document.createElement('dialog');dialog.className='lightbox';
   dialog.setAttribute('aria-label','图片放大预览');
-  dialog.innerHTML=`<div class="lightbox-toolbar"><output aria-label="当前比例"></output><button data-fit>适应窗口</button><button data-original>1:1</button><button data-close aria-label="关闭图片预览">×</button></div><div class="lightbox-stage"><p class="lightbox-status" role="status"></p></div><button class="lightbox-prev" aria-label="上一张">‹</button><button class="lightbox-next" aria-label="下一张">›</button><div class="lightbox-caption" aria-live="polite"></div>`;
+  dialog.innerHTML=`<div class="lightbox-toolbar"><output aria-label="当前比例"></output><button data-fit>适应窗口</button><button data-original>1:1</button><button data-copy title="复制这张图，可以直接粘贴到微信、PS 等">复制图片</button><button data-close aria-label="关闭图片预览">×</button></div><div class="lightbox-stage"><p class="lightbox-status" role="status"></p></div><button class="lightbox-prev" aria-label="上一张">‹</button><button class="lightbox-next" aria-label="下一张">›</button><div class="lightbox-caption" aria-live="polite"></div>`;
   document.body.append(dialog);
   const stage=dialog.querySelector('.lightbox-stage'),status=dialog.querySelector('.lightbox-status'),caption=dialog.querySelector('.lightbox-caption'),ratio=dialog.querySelector('output'),prev=dialog.querySelector('.lightbox-prev'),next=dialog.querySelector('.lightbox-next');
   let items=[],index=0,img,fit=1,pose={scale:1,x:0,y:0},drag=null,opener,overflow,htmlOverflow,ready=false;
@@ -46,6 +47,13 @@ function createLightbox(){
   dialog.querySelector('[data-close]').onclick=close;
   dialog.querySelector('[data-fit]').onclick=()=>reset();dialog.querySelector('[data-original]').onclick=()=>reset(true);
   prev.onclick=()=>turn(-1);next.onclick=()=>turn(1);
+  const copyButton=dialog.querySelector('[data-copy]');let copyTimer;
+  copyButton.onclick=async()=>{
+    const label='复制图片';clearTimeout(copyTimer);copyButton.disabled=true;copyButton.title='';
+    try{await copyImage(items[index].src);copyButton.textContent='已复制';}
+    catch(error){copyButton.textContent='复制失败';copyButton.title=error.message;}
+    finally{copyButton.disabled=false;copyTimer=setTimeout(()=>{copyButton.textContent=label;},1800);}
+  };
   let moved=false;
   dialog.addEventListener('click',e=>{if(!moved&&(e.target===stage||e.target===dialog))close();moved=false;});
   dialog.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();turn(e.key==='ArrowLeft'?-1:1);}});

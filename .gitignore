@@ -1,5 +1,7 @@
 # 本机数据和构建产物（公开库不上传）
 exchange/
+secrets/
+webview-data/
 pylibs/
 packaging/build/
 packaging/dist/
@@ -7,6 +9,8 @@ packaging/output/
 tests/tmp/
 tests/screens/
 tests/*.json
+tests/e2e/*.json
+max/tests/_t/
 __pycache__/
 *.pyc
 *.bak
@@ -14,5 +18,6 @@ __pycache__/
 ai_settings.json
 render_node.json
 remote_nodes.json
+image_api.json
 refs/library.json
 template/*.max

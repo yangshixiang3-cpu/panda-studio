@@ -51,7 +51,9 @@ class OverrideTests(unittest.TestCase):
                                   'render_preset': '禁止'}, self.manifest, self.items)
         self.assertEqual(result['materials'], {'木': {}})
         self.assertEqual(result['lights'], {'intensity_mul': 1.6, 'rotate_deg': -90, 'per_light': {'主灯': {'intensity_mul': 2}}})
-        self.assertEqual(result['environment'], {'reflection_strength_mul': .5})
+        self.assertEqual(result['environment'], {'reflection_strength_mul': 0})
+        self.assertEqual(clamp_overrides({'environment': {'reflection_strength_mul': -2}}, self.manifest, self.items)['environment'],
+                         {'reflection_strength_mul': 0})
         self.assertEqual(result['items'], {'1': {'lights': {'rotate_deg': 90}}})
         self.assertNotIn('render_preset', result)
 

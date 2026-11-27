@@ -20,6 +20,138 @@ from .lighting import (MAX_LIGHTING_BYTES, validate_lighting, merged_lighting, l
 from .jobs import JobIndex, TERMINAL
 from .runner import RunnerStatus
 
+try:
+    from . import materials as _materials
+except ImportError:
+    _materials = None
+
+
+def _resolve_materials():
+    global _materials
+    if _materials is not None:
+        return _materials
+    import sys
+    mod_key = f'{__package__}.materials' if __package__ else 'server.materials'
+    if mod_key in sys.modules:
+        return sys.modules[mod_key]
+    try:
+        import importlib
+        mod = importlib.import_module(mod_key)
+        _materials = mod
+        return mod
+    except ImportError:
+        return None
+
+
+def _fallback_effective_overrides(task):
+    accepted = task.get('ai_calibration', {}).get('accepted_overrides')
+    manual = task.get('material_overrides')
+    if not isinstance(manual, dict) or not manual:
+        return accepted
+    base = copy.deepcopy(accepted) if isinstance(accepted, dict) else {
+        'materials': {}, 'lights': {}, 'environment': {}, 'items': {}
+    }
+    for section in ('materials', 'lights', 'environment', 'items'):
+        base.setdefault(section, {})
+    if isinstance(manual.get('materials'), dict):
+        for name, params in manual['materials'].items():
+            if isinstance(params, dict):
+                merged = dict(base['materials'].get(name) or {})
+                merged.update(params)
+                base['materials'][name] = merged
+    if isinstance(manual.get('environment'), dict):
+        base['environment'].update(manual['environment'])
+    return base
+
+
+def _fallback_scene_materials_detail(studio, task, jobs=None):
+    materials = []
+    environment = {}
+    task_folder = studio.task_dir(task['id'])
+    candidates = []
+    by_id = {job['job_id']: job for job, _ in (jobs or [])}
+    for record in reversed(task.get('ai_calibration', {}).get('rounds', [])):
+        cal_dir = by_id.get(record.get('job_id'), {}).get('calibration_dir')
+        folder = Path(cal_dir) if cal_dir else task_folder / 'calibration' / f"round-{record['n']}"
+        candidates.append(folder / 'scene_manifest.json')
+    candidates.append(task_folder / 'preview' / 'scene_manifest.json')
+    candidates.append(task_folder / 'preview' / 'materials.json')
+    for path in candidates:
+        if not inside(path, task_folder) or not path.is_file():
+            continue
+        try:
+            doc = read_json(path)
+            raw_mats = doc.get('materials')
+            if isinstance(raw_mats, list):
+                seen = set()
+                for entry in raw_mats:
+                    if isinstance(entry, dict) and isinstance(entry.get('name'), str) and entry['name'] and entry['name'] not in seen:
+                        seen.add(entry['name'])
+                        materials.append(entry)
+                if isinstance(doc.get('environment'), dict):
+                    environment = doc['environment']
+                break
+        except (OSError, ValueError, TypeError):
+            continue
+    return {
+        'materials': materials,
+        'environment': environment,
+        'material_overrides': copy.deepcopy(task.get('material_overrides') or {}),
+        'effective_overrides': _fallback_effective_overrides(task),
+        'material_bindings': copy.deepcopy(task.get('material_bindings') or {}),
+    }
+
+
+def _fallback_update_task_materials(studio, task_id, data):
+    if not isinstance(data, dict):
+        raise StudioError('材质参数格式无效。')
+    with studio.lock:
+        from .calibration import ACTIVE
+        task = studio.load(task_id)
+        if task.get('ai_calibration', {}).get('state') in ACTIVE:
+            raise StudioError(CALIBRATION_EDIT_CONFLICT, 409)
+        if data.get('reset') is True:
+            task.pop('material_overrides', None)
+        else:
+            current = copy.deepcopy(task.get('material_overrides') or {})
+            incoming = data.get('material_overrides') if isinstance(data.get('material_overrides'), dict) else data
+            if 'materials' in incoming:
+                if not isinstance(incoming['materials'], dict):
+                    raise StudioError('材质覆盖参数必须是对象。')
+                mats = dict(current.get('materials') or {})
+                for name, values in incoming['materials'].items():
+                    if values is None:
+                        mats.pop(name, None)
+                    elif isinstance(values, dict):
+                        mats[name] = {k: v for k, v in values.items() if type(v) in (int, float) and math.isfinite(v) or v is None}
+                    else:
+                        raise StudioError('材质参数项无效。')
+                current['materials'] = mats
+            if 'environment' in incoming:
+                if incoming['environment'] is None:
+                    current.pop('environment', None)
+                elif isinstance(incoming['environment'], dict):
+                    current['environment'] = {
+                        k: v for k, v in incoming['environment'].items()
+                        if type(v) in (int, float) and math.isfinite(v)
+                    }
+                else:
+                    raise StudioError('环境反射参数必须是对象。')
+            if current.get('materials') or current.get('environment'):
+                task['material_overrides'] = current
+            else:
+                task.pop('material_overrides', None)
+        if 'material_bindings' in data:
+            if not isinstance(data['material_bindings'], dict):
+                raise StudioError('材质绑定必须是对象。')
+            task['material_bindings'] = {
+                str(k): v for k, v in data['material_bindings'].items()
+                if isinstance(k, str) and (v is None or isinstance(v, (str, dict)))
+            }
+        studio.save(task)
+        jobs = studio.job_index.for_task(task_id)
+        return {'task': task, 'materials_detail': _fallback_scene_materials_detail(studio, task, jobs)}
+
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
 MAX_REFERENCE_BYTES = 50 * 1024 * 1024
@@ -235,6 +367,68 @@ def validate_variants(value):
     return variants
 
 
+# 按清单编号命名的成果文件（文件夹, 编号后缀）。删除、排序时随条目一起改名。
+RESULT_FILES = (('smallshots', '.jpg'), ('final', '.jpg'), ('final', '_遮罩_ID.jpg'),
+                ('lighting', '.png'), ('lighting', '.png.prev'))
+REMOVED_KEEP = 20       # 删掉的条目留最近 20 个，撤销时连同成果一起恢复
+THUMB_MIN = 32
+THUMB_MAX = 1024
+THUMB_KEEP_DAYS = 30
+
+
+def replace_retry(source, target):
+    # Windows 上图片正被读取（预览、缩图）时改名会短暂失败。
+    for attempt in range(30):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == 29:raise
+            time.sleep(.02)
+
+
+def undo_moves(staged, placed):
+    for source, temp, target in reversed(placed):
+        try:os.replace(target, temp)
+        except OSError:pass
+    for source, temp, target in reversed(staged):
+        try:os.replace(temp, source)
+        except OSError:pass
+
+
+def move_files(moves):
+    """成组改名：先全部移到临时名再放到目标，编号互换也不会互相覆盖；中途失败按原路退回。"""
+    staged, placed = [], []
+    try:
+        for source, target in moves:
+            if not source.is_file():continue
+            temp = source.with_name(f'.{uuid.uuid4().hex[:8]}.moving')
+            replace_retry(source, temp)
+            staged.append((source, temp, target))
+        for source, temp, target in staged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            replace_retry(temp, target)
+            placed.append((source, temp, target))
+    except OSError:
+        undo_moves(staged, placed)
+        raise StudioError('整理出图文件失败：请关掉正在打开这些图片的程序后再试。', 409)
+    return staged, placed
+
+
+def renumbered_result(result, old, new, folder):
+    """成果跟着条目走：按编号命名的文件改成新编号，状态和作业号不变；
+    记下作业里的原编号（job_item），合并作业状态时按它对应。"""
+    result = copy.deepcopy(result)
+    if old == new:
+        return result
+    for key, suffix in (('file', '.jpg'), ('mask', '_遮罩_ID.jpg')):
+        if str(result.get(key) or '').replace('\\', '/') == f'{folder}/{old}{suffix}':
+            result[key] = f'{folder}/{new}{suffix}'
+    if result.get('job_id') and (result.get('job_item') or {}).get('job_id') != result['job_id']:
+        result['job_item'] = {'job_id':result['job_id'], 'no':old}
+    return result
+
+
 def delivery_stem(task, no):
     variant = task.get('variant')
     return f"{variant['name']}_{no}" if variant else str(no)
@@ -265,17 +459,24 @@ def validate_camera(value):
 
 
 class Studio:
-    def __init__(self, root=ROOT, config=None):
+    def __init__(self, root=ROOT, config=None, defer_startup=False):
         self.root = Path(root).resolve()
         self.config = config or read_json(self.root/'config.json')
         self.exchange = (self.root/self.config['exchange_dir']).resolve()
         if self.exchange == self.root or not inside(self.exchange,self.root) or any(inside(self.exchange,self.root/p) for p in ('max','docs','web','server','tools')):
             raise StudioError('交换目录必须位于白底工具的可写目录内。')
         self.lock = threading.RLock()
+        self._scan_lock = threading.Lock()
+        self._delivering = set()
         self.scanned_models = {}
+        self._defer_startup = bool(defer_startup)
+        self._startup_hooks = []
+        self._startup_once_lock = threading.Lock()
+        self._startup_ran = False
+        self.startup_done = threading.Event()
         (self.exchange/'tasks').mkdir(parents=True,exist_ok=True)
         (self.exchange/'jobs').mkdir(parents=True,exist_ok=True)
-        self.job_index = JobIndex(self.exchange/'jobs', read_json)
+        self.job_index = JobIndex(self.exchange/'jobs', read_json, defer_initial_scan=self._defer_startup)
         self.runner = RunnerStatus(self.root, self.exchange, self.config)
         from .remote_client import RemoteBridge
         self.remote = RemoteBridge(self)   # 内网渲染机：选了渲染机时转发作业（后台线程由 LocalServer 启动）
@@ -283,8 +484,43 @@ class Studio:
         from .ref_library import RefLibrary
         self.refs = RefLibrary(self.root)
         self.calibration = Calibration(self)
-        self.calibration.recover()
-        self.purge_trash()
+        if not self._defer_startup:
+            self.calibration.recover()
+            # 以前 AI 校准里加的材质参考补进参考库（只补没收进去的，后台跑，不耽误打开）
+            threading.Thread(target=self.calibration.sync_library, daemon=True, name='refs-sync').start()
+            self.purge_trash()
+            self.purge_thumbs()
+            self._startup_ran = True
+            self.startup_done.set()
+
+    def register_startup_hook(self, fn):
+        self._startup_hooks.append(fn)
+
+    def run_startup_tasks(self):
+        with self._startup_once_lock:
+            if self._startup_ran:
+                return
+            self._startup_ran = True
+        try:
+            from . import node_setup
+            for step in (
+                self.job_index.refresh_history,
+                self.calibration.recover,
+                self.purge_trash,
+                self.purge_thumbs,
+                self.calibration.sync_library,
+                self.runner.warm_async,
+                lambda: node_setup.warm_async(self.root),
+                *self._startup_hooks,
+            ):
+                if self.calibration.stopping.is_set():
+                    break
+                try:
+                    step()
+                except Exception:
+                    continue
+        finally:
+            self.startup_done.set()
 
     def task_dir(self, task_id):
         if not ID_RE.fullmatch(task_id):
@@ -365,7 +601,7 @@ class Studio:
                 if not target.is_absolute() or not target.is_dir():
                     raise StudioError('找不到这个文件夹。')
                 target = target.resolve()
-                own = [self.exchange] + [self.root/p for p in ('web', 'server', 'max', 'template', 'refs', 'tools', 'pylibs')]
+                own = [self.exchange] + [self.root/p for p in ('web', 'server', 'max', 'template', 'refs', 'tools', 'pylibs', 'secrets', 'webview-data')]
                 if target == self.root or any(inside(target, p) for p in own):
                     raise StudioError('不能保存到工作台自己的文件夹里。', 403)
                 if target == (product/'sku').resolve():
@@ -414,7 +650,8 @@ class Studio:
                                   if (folder/name).suffix.lower() in IMAGES
                                   and not (folder/name).is_symlink() and inside(folder/name, product))
         models.sort(key=lambda p: ('模型' not in Path(p).relative_to(product).parts[:-1], p.casefold()))
-        self.scanned_models[str(product)] = set(models)
+        with self._scan_lock:
+            self.scanned_models[str(product)] = set(models)
         delivery, custom = self.delivery_dir(product)
         try:
             saved = sorted((str(p) for p in delivery.iterdir() if p.is_file()), key=str.casefold)[:DELIVERY_LIST_LIMIT] if delivery.is_dir() else []
@@ -467,7 +704,8 @@ class Studio:
               'items':draft_items(),'delivered':None}
         from .calibration import initial_calibration
         task['ai_calibration'] = initial_calibration(self.config)
-        self.save(task)
+        with self.lock:
+            self.save(task)
         return task
 
     def _variant_siblings(self, task):
@@ -529,6 +767,7 @@ class Studio:
             for item in task['items']:
                 for mode in ('smallshot', 'final'):
                     item[mode].update(state='none', job_id='')
+                    item[mode].pop('job_item', None)
                     item[mode].pop('message', None)
             task['ai_calibration'].update(accepted_overrides=None, accepted_round=None)
         task.update(variants=variants, variant=variant)
@@ -615,14 +854,27 @@ class Studio:
         folder.mkdir(exist_ok=True)
         target = folder/f'{no}.png'
         if not inside(target, folder):raise StudioError('光向示意图编号或路径无效。',403)
-        backup(target)
         temp = folder/(uuid.uuid4().hex+'.tmp')
-        temp.write_bytes(content)
-        os.replace(temp, target)
+        try:
+            temp.write_bytes(content)
+            with self.lock:
+                latest = self.load(task_id)
+                latest_item = next((i for i in latest['items'] if i['no'] == no), None)
+                if latest_item is None:
+                    raise StudioError('没有这个清单编号。', 404)
+                if not latest_item['enabled'] or not lighting_active(merged_lighting(latest, latest_item)):
+                    raise StudioError('此条目的光方向未生效。', 409)
+                backup(target)
+                replace_retry(temp, target)
+        finally:
+            if temp.exists():
+                try:temp.unlink()
+                except OSError:pass
         return {'no':no, 'file':str(target)}
 
-    def add_reference(self, task_id, name, content):
-        task = self.load(task_id)
+    def _stage_reference_file(self, task_id, name, content):
+        if not (self.task_dir(task_id)/'task.json').is_file():
+            raise StudioError('没有找到这个任务。', 404)
         name = str(name).replace('\\', '/').split('/')[-1]
         suffix = Path(name).suffix.lower()
         validate_reference(name, content)
@@ -643,16 +895,22 @@ class Studio:
             try:
                 with target.open('xb') as stream:
                     stream.write(content)
-                break
+                return str(target.resolve())
             except FileExistsError:
                 index += 1
                 name = f'{stem} ({index}){suffix}'
-        task['reference_images'].append(str(target.resolve()))
-        self.save(task)
-        return task
+
+    def add_reference(self, task_id, name, content):
+        saved = self._stage_reference_file(task_id, name, content)
+        with self.lock:
+            task = self.load(task_id)
+            task['reference_images'].append(saved)
+            self.save(task)
+            return task
 
     def add_reference_paths(self, task_id, paths):
-        self.load(task_id)
+        if not (self.task_dir(task_id)/'task.json').is_file():
+            raise StudioError('没有找到这个任务。', 404)
         if not isinstance(paths, list) or not 1 <= len(paths) <= 100:
             raise StudioError('请选择 1—100 张参考图。')
         # 先检查整批，避免后面的错误导致前面的图片重复加入。
@@ -664,17 +922,31 @@ class Studio:
             with path.open('rb') as stream:
                 validate_reference(path.name, stream.read(12), path.stat().st_size)
             images.append(path)
+        saved_paths = []
         for path in images:
             with path.open('rb') as stream:
                 content = stream.read(MAX_REFERENCE_BYTES + 1)
-            task = self.add_reference(task_id, path.name, content)
-        return task
+            saved_paths.append(self._stage_reference_file(task_id, path.name, content))
+        with self.lock:
+            task = self.load(task_id)
+            task['reference_images'].extend(saved_paths)
+            self.save(task)
+            return task
 
     def update(self, task_id, data):
+        with self.lock:
+            return self._update(task_id, data)
+
+    def _update(self, task_id, data):
         task=self.merge(task_id)['task']
         from .calibration import ACTIVE
         active = task['ai_calibration']['state'] in ACTIVE
-        old_lighting = {i['no']:effective_lighting(merged_lighting(task, i)) for i in task['items']}
+        stash = list(task.get('removed_items') or [])
+        old_lighting = {i['item_id']:effective_lighting(merged_lighting(task, i)) for i in task['items']}
+        for entry in stash:
+            old_lighting.setdefault(entry['item_id'], entry.get('effective_lighting')
+                                    or effective_lighting(merged_lighting(task, entry['item'])))
+        moves=[]; discard=[]
         if 'lighting' in data:
             lighting = validate_lighting(data['lighting'])
             if active and lighting != task['lighting']:raise StudioError(CALIBRATION_EDIT_CONFLICT,409)
@@ -700,10 +972,15 @@ class Studio:
                 raise StudioError(CALIBRATION_EDIT_CONFLICT,409)
             if not 1<=len(incoming)<=100:
                 raise StudioError('清单需要保留 1–100 项。')
-            if structural and any(x[s]['state'] in ('queued','rendering') for x in old for s in ('smallshot','final')):
+            if structural and (task_id in self._delivering
+                               or any(x[s]['state'] in ('queued','rendering') for x in old for s in ('smallshot','final'))
+                               or any(job['type']=='render' and status['state'] not in TERMINAL
+                                      for job, status in self.job_index.for_task(task_id))):
                 raise StudioError('请等当前小样或成品任务结束后再调整清单顺序。',409)
-            normalized=[]; used_ids=set()
-            old_ids={item['item_id'] for item in old}
+            normalized=[]; used_ids=set(); renumbered={}
+            old_by_id={item['item_id']:item for item in old}
+            stashed={entry['item_id']:entry['item'] for entry in stash}
+            folder=self.task_dir(task_id)
             edited_at=now()
             for i,x in enumerate(incoming):
                 no=i+1
@@ -716,34 +993,67 @@ class Studio:
                       'enabled':bool(x.get('enabled',True)), 'camera':validate_camera(x['camera']),
                       'lighting':validate_lighting(x['lighting']) if x.get('lighting') is not None else None,
                       'parts':part_values,'render_open_state':False,'note':str(x.get('note',''))[:2000]}
-                prior=old[i] if i<len(old) else None
+                restored=False
+                if structural:
+                    # 增删、排序：按 item_id 对回原条目（或刚删掉、可撤销的条目），成果跟着条目走。
+                    identity=x.get('item_id')
+                    if not isinstance(identity,str) or identity in used_ids:identity=None
+                    prior=old_by_id.get(identity)
+                    if prior is None and identity in stashed:
+                        prior=stashed[identity]; restored=True
+                    if prior is None:identity=uuid.uuid4().hex
+                else:
+                    prior=old[i]; identity=prior['item_id']
                 if active and item['lighting'] != prior['lighting']:
                     raise StudioError(CALIBRATION_EDIT_CONFLICT,409)
-                identity = x.get('item_id') if structural else prior['item_id']
-                if not isinstance(identity,str) or identity not in old_ids or identity in used_ids:
-                    identity = uuid.uuid4().hex
                 item['item_id'] = identity
                 used_ids.add(identity)
                 if prior and item['camera'] == validate_camera(prior['camera']):
                     item['camera'] = prior['camera']
-                changed=structural or not prior or any(item[k]!=prior[k] for k in ('camera','orientation'))
+                changed=not prior or any(item[k]!=prior[k] for k in ('camera','orientation'))
                 if changed or item['parts'] != prior['parts']:
                     item['appearance_updated_at'] = edited_at
                 elif 'appearance_updated_at' in prior:
                     item['appearance_updated_at'] = prior['appearance_updated_at']
-                for mode,folder in (('smallshot','smallshots'),('final','final')):
-                    item[mode]={'state':'none','file':f'{folder}/{no}.jpg','job_id':''}
+                for mode,sub in (('smallshot','smallshots'),('final','final')):
+                    item[mode]={'state':'none','file':f'{sub}/{no}.jpg','job_id':''}
                     if mode=='final':item[mode]['mask']=f'final/{no}_遮罩_ID.jpg'
-                    if not changed:item[mode]=prior[mode]
+                    if not changed:item[mode]=renumbered_result(prior[mode],prior['no'],no,sub)
+                if prior and not restored:
+                    renumbered[prior['no']]=no
+                if restored:
+                    discard.append(folder/'removed'/identity)
+                    moves += [(folder/'removed'/identity/f'{sub}{suffix}', folder/sub/f'{no}{suffix}') for sub,suffix in RESULT_FILES]
+                elif prior and prior['no']!=no:
+                    moves += [(folder/sub/f"{prior['no']}{suffix}", folder/sub/f'{no}{suffix}') for sub,suffix in RESULT_FILES]
                 normalized.append(item)
+            # 删掉的条目连同成果暂存到 removed/，撤销时按 item_id 恢复。
+            for gone in old:
+                if gone['item_id'] in used_ids:continue
+                moves += [(folder/sub/f"{gone['no']}{suffix}", folder/'removed'/gone['item_id']/f'{sub}{suffix}')
+                          for sub,suffix in RESULT_FILES]
+                stash=[e for e in stash if e['item_id']!=gone['item_id']]
+                stash.append({'item_id':gone['item_id'],'removed_at':edited_at,
+                              'effective_lighting':old_lighting[gone['item_id']],'item':copy.deepcopy(gone)})
+            stash=[e for e in stash if e['item_id'] not in used_ids]
+            discard += [folder/'removed'/e['item_id'] for e in stash[:-REMOVED_KEEP]]
+            stash=stash[-REMOVED_KEEP:]
+            if stash or 'removed_items' in task:
+                task['removed_items']=stash
+            overrides=task['ai_calibration'].get('accepted_overrides')
+            if structural and isinstance(overrides,dict) and isinstance(overrides.get('items'),dict):
+                # 校准认可的单张调整按编号记，跟着条目改编号；删掉的条目去掉。
+                overrides['items']={str(renumbered[int(k)]):v for k,v in overrides['items'].items()
+                                    if str(k).isdigit() and int(k) in renumbered}
             task['items']=normalized
         lighting_changed = False
         for entry in task['items']:
-            if old_lighting.get(entry['no']) != effective_lighting(merged_lighting(task, entry)):
+            if entry['item_id'] in old_lighting and old_lighting[entry['item_id']] != effective_lighting(merged_lighting(task, entry)):
                 lighting_changed |= entry['enabled']
                 entry['appearance_updated_at'] = now()
                 for mode in ('smallshot','final'):
                     entry[mode].update(state='none',job_id='')
+                    entry[mode].pop('job_item', None)
         if lighting_changed:
             task['ai_calibration'].update(accepted_overrides=None, accepted_round=None)
         if 'output_preset' in data:
@@ -757,12 +1067,21 @@ class Studio:
                 # 尺寸变了，已出的成品不再对应，需要重新渲染
                 for entry in task['items']:
                     entry['final'].update(state='none',job_id='')
+                    entry['final'].pop('job_item', None)
         if 'preview_rotation_deg' in data:
             angle=data['preview_rotation_deg']
             if not isinstance(angle,(int,float)) or angle%90:
                 raise StudioError('模型转动量必须为 90° 的整倍数。')
             task['preview_rotation_deg']=angle%360
-        self.save(task)
+        moved=move_files(moves) if moves else None
+        try:
+            self.save(task)
+        except BaseException:
+            if moved:undo_moves(*moved)
+            raise
+        for path in discard:
+            if inside(path, self.task_dir(task_id)/'removed'):
+                shutil.rmtree(path, ignore_errors=True)
         return task
 
     def draft(self, task_id, data):
@@ -804,19 +1123,14 @@ class Studio:
     TRASH_KEEP_DAYS = 30
 
     def _pending_jobs(self, task_id):
-        pending = []
-        for job in self.jobs_for(task_id):
-            status = self.exchange/'jobs'/(job['job_id']+'.status.json')
-            state = read_json(status).get('state') if status.is_file() else 'queued'
-            if state not in TERMINAL:
-                pending.append(job['job_id'])
-        return pending
+        return [job['job_id'] for job, status in self.job_index.for_task(task_id)
+                if status.get('state') not in TERMINAL]
 
     def delete_task(self, task_id):
         from .calibration import ACTIVE
         task = self.load(task_id)
         running = any(x[s]['state'] in ('queued', 'rendering') for x in task['items'] for s in ('smallshot', 'final'))
-        if running or task['ai_calibration']['state'] in ACTIVE or self._pending_jobs(task_id):
+        if task_id in self._delivering or running or task['ai_calibration']['state'] in ACTIVE or self._pending_jobs(task_id):
             raise StudioError('这个任务还在出图或校准，等它结束再删除。', 409)
         source = self.task_dir(task_id)
         trash = self.exchange/'trash'
@@ -866,14 +1180,13 @@ class Studio:
             raise StudioError('只使用产品的 .max 模型，不再导入 FBX。',400)
         if not task['model_max'] or not Path(task['model_max']).is_file():
             raise StudioError('产品文件夹里没有 .max 模型。')
-        prior=[j for j in self.jobs_for(task_id) if j['type']=='export_preview']
+        prior=[(j, s) for j, s in self.job_index.for_task(task_id) if j['type']=='export_preview']
         base=self.task_dir(task_id)/'preview'
         if not prior and task.get('variant_group') and self._preview_files_ready(base):
             return {'job':None,'task':task}
         if prior:
-            latest=prior[-1]
-            status_path=self.exchange/'jobs'/(latest['job_id']+'.status.json')
-            if not status_path.exists() or read_json(status_path)['state']!='failed':
+            latest, latest_status = prior[-1]
+            if latest_status.get('state') != 'failed':
                 return {'job':latest,'task':task}
         job_id=new_id()
         job={'type':'export_preview','job_id':job_id,'task_id':task_id,'created_at':now(),
@@ -902,7 +1215,10 @@ class Studio:
         if mode=='smallshot':
             if self.config.get('calibration_auto', False) and task['ai_calibration']['enabled']:
                 return self.calibration.start(task)
-        return self._submit_render(task, mode, task['ai_calibration']['accepted_overrides'])
+        mat_mod = _resolve_materials()
+        overrides = (mat_mod.effective_overrides(task) if mat_mod is not None
+                     else _fallback_effective_overrides(task))
+        return self._submit_render(task, mode, overrides)
 
     def _submit_render(self, task, mode, overrides=None, round_no=None, job_id=None):
         task_id=task['id']
@@ -942,6 +1258,7 @@ class Studio:
                                  'out_image':str(output_folder/f'{no}.jpg'),
                                  'out_mask':str(self.task_dir(task_id)/folder/f'{no}_遮罩_ID.jpg') if mode=='final' else None})
             item[mode].update(state='queued',job_id=job_id,file=str((output_folder/f'{no}.jpg').relative_to(self.task_dir(task_id))))
+            item[mode].pop('job_item', None)
         self.write_job(job)
         task.update(lighting_config)
         self.save(task)
@@ -952,6 +1269,7 @@ class Studio:
             return self._merge(task_id)
 
     def describe(self, task_id):
+        runner = self.runner_status()
         with self.lock:
             jobs = self.job_index.for_task(task_id)
             payload = self._merge(task_id, jobs)
@@ -959,8 +1277,8 @@ class Studio:
             stable = {**payload, 'progress': {k: v for k, v in progress.items() if k != 'eta_sec'}}
             signature = hashlib.sha256(json.dumps(
                 stable, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
-            payload.update(runner=self.runner_status(), progress=progress, signature=signature)
-            return payload
+        payload.update(runner=runner, progress=progress, signature=signature)
+        return payload
 
     def _merge(self, task_id, jobs=None):
         from .calibration import scene_materials
@@ -983,12 +1301,15 @@ class Studio:
             for item in task['items']:
                 dest=item[job['mode']]
                 if dest['job_id']!=job['job_id']:continue
-                state=mapping.get(item['no'],{}).get('state')
+                job_item=dest.get('job_item')
+                job_no=job_item['no'] if isinstance(job_item,dict) and job_item.get('job_id')==job['job_id'] else item['no']
+                entry=mapping.get(job_no,{})
+                state=entry.get('state')
                 if state:dest['state']={'pending':'queued'}.get(state,state)
                 elif status['state']=='failed':dest['state']='failed'
                 elif status['state'] in ('queued','waiting_lock'):dest['state']='queued'
                 else:dest['state']='rendering' if status['state']=='running' else 'failed'
-                dest['message']=mapping.get(item['no'],{}).get('message',status.get('message',''))
+                dest['message']=entry.get('message',status.get('message',''))
         bbox_path=self.task_dir(task_id)/'preview'/'bbox.json'
         if task['preview_source']=='file' and Path(task['preview_fbx']).is_file():preview['state']='done'
         elif preview['state']=='none' and task.get('variant_group') and self._preview_files_ready(bbox_path.parent):
@@ -1008,9 +1329,14 @@ class Studio:
         if task_id:
             task=self.load(task_id); product=Path(task['product_dir'])
             roots += [self.product_root(product,n) for n in ('参考图','sku')]
-            if str(product.resolve()) not in self.scanned_models:
+            prod_key = str(product.resolve())
+            with self._scan_lock:
+                known_models = self.scanned_models.get(prod_key)
+            if known_models is None:
                 self.scan(str(product))
-            if str(target) in self.scanned_models[str(product.resolve())]:
+                with self._scan_lock:
+                    known_models = self.scanned_models.get(prod_key, set())
+            if str(target) in known_models:
                 if not inside(target, product):raise StudioError('禁止读取这个路径。',403)
                 if not target.is_file():raise StudioError('文件不存在。',404)
                 return target
@@ -1021,6 +1347,70 @@ class Studio:
         if not any(inside(target,root) for root in roots):raise StudioError('禁止读取这个路径。',403)
         if not target.is_file():raise StudioError('文件不存在。',404)
         return target
+
+    def thumb_file(self, source, width):
+        """按需生成并缓存 WebP 缩略图（放在 exchange/.thumbs，不碰 C 盘）。
+        原图不是有效图片或 Pillow 失败时回退到原文件。"""
+        source = Path(source)
+        if source.suffix.lower() not in IMAGES:
+            return source
+        try:
+            size = int(width)
+        except (TypeError, ValueError):
+            return source
+        if size <= 0:
+            return source
+        size = max(THUMB_MIN, min(THUMB_MAX, size))
+        try:
+            stat = source.stat()
+            resolved = source.resolve()
+        except OSError:
+            return source
+        key = hashlib.sha256(f'{resolved}\0{stat.st_mtime_ns}\0{stat.st_size}\0{size}'.encode('utf-8')).hexdigest()[:32]
+        thumbs = self.exchange / '.thumbs'
+        target = thumbs / f'{key}.webp'
+        try:
+            if target.is_file():
+                now_ts = time.time()
+                if now_ts - target.stat().st_mtime > 86400:
+                    os.utime(target, (now_ts, now_ts))
+                return target
+            from PIL import Image, ImageOps
+            with Image.open(source) as image:
+                image.seek(0)
+                image = ImageOps.exif_transpose(image)
+                if max(image.size) <= size and source.suffix.lower() == '.webp':
+                    return source
+                if image.mode not in ('RGB', 'RGBA'):
+                    image = image.convert('RGBA' if 'A' in image.getbands() or 'transparency' in image.info else 'RGB')
+                image.thumbnail((size, size), Image.LANCZOS)
+                thumbs.mkdir(parents=True, exist_ok=True)
+                temp = thumbs / f'.{key}.{uuid.uuid4().hex[:8]}.tmp'
+                try:
+                    image.save(temp, 'WEBP', quality=84, method=4)
+                    replace_retry(temp, target)
+                finally:
+                    if temp.exists():
+                        try:temp.unlink()
+                        except OSError:pass
+            return target
+        except Exception:
+            return source
+
+    def purge_thumbs(self, now_ts=None):
+        thumbs = self.exchange / '.thumbs'
+        if not thumbs.is_dir():
+            return 0
+        limit = (now_ts or time.time()) - THUMB_KEEP_DAYS * 86400
+        removed = 0
+        for path in thumbs.iterdir():
+            try:
+                if path.is_file() and path.stat().st_mtime < limit and inside(path, thumbs):
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
 
     def delivery_plan(self, task_id):
         task=self.merge(task_id)['task']; product=Path(task['product_dir'])
@@ -1077,42 +1467,111 @@ class Studio:
         return {'task_id':task_id,'sku_dir':str(sku),'files':files,'token':token}
 
     def deliver(self, task_id, token):
-        plan=self.delivery_plan(task_id)
-        if token!=plan['token']:raise StudioError('入库清单已变化，请重新查看并确认。',409)
-        task=self.load(task_id); sku=Path(plan['sku_dir']); sku.mkdir(parents=True,exist_ok=True)
-        archive_time=datetime.now()
-        archive=sku/'旧版'/archive_time.strftime('%Y%m%d-%H%M%S')
-        while archive.exists():
-            archive_time+=timedelta(seconds=1)
-            archive=sku/'旧版'/archive_time.strftime('%Y%m%d-%H%M%S')
-        light_root=self.product_root(Path(task['product_dir']),'光向参考')
-        light_archive=light_root/'旧版'/archive.name
-        while light_archive.exists():
-            archive_time+=timedelta(seconds=1)
-            light_archive=light_root/'旧版'/archive_time.strftime('%Y%m%d-%H%M%S')
-        delivered_at=now(); records=[]
-        for item in task['items']:
-            if item['enabled'] and item['final']['state']=='done':
-                light = merged_lighting(task, item)
-                light['enabled'] = lighting_active(light)
-                records.append({'no':item['no'],'label':item['label'],'view':item['view'],'orientation':item['orientation'],
-                                'lighting':light,'lighting_text':lighting_text(light),
-                                'camera':item['camera'],'model_max':task['model_max'],'task_id':task_id,'delivered_at':delivered_at})
-                if task.get('variant'):
-                    stem = delivery_stem(task, item['no'])
-                    records[-1].update(image_file=f'{stem}.jpg', mask_file=f'{stem}_遮罩_ID.jpg',
-                                       lighting_file=f'光向参考/{stem}.png' if light['enabled'] else None)
-        for f in plan['files']:
-            target=Path(f['destination'])
-            target.parent.mkdir(parents=True,exist_ok=True)
-            destination_archive=light_archive if inside(target,light_root) else archive
-            if target.exists():
-                backup(target)
-                destination_archive.mkdir(parents=True,exist_ok=True)
-                shutil.move(str(target),str(destination_archive/target.name))
-            if f['source']:shutil.copy2(f['source'],target)
-            else:atomic_json(target,records)
-        task['delivered']={'at':delivered_at,'sku_dir':str(sku),'files':[f['name'] for f in plan['files']],
-                           'archive_dir':str(archive) if archive.exists() else None}
-        self.save(task)
-        return task['delivered']
+        with self.lock:
+            if task_id in self._delivering:
+                raise StudioError('该任务正在入库，请稍候。', 409)
+            plan = self.delivery_plan(task_id)
+            if token != plan['token']:
+                raise StudioError('入库清单已变化，请重新查看并确认。', 409)
+            task = self.load(task_id)
+            delivered_at = now()
+            records = []
+            for item in task['items']:
+                if item['enabled'] and item['final']['state'] == 'done':
+                    light = merged_lighting(task, item)
+                    light['enabled'] = lighting_active(light)
+                    records.append({
+                        'no': item['no'], 'label': item['label'], 'view': item['view'],
+                        'orientation': item['orientation'], 'lighting': light,
+                        'lighting_text': lighting_text(light), 'camera': item['camera'],
+                        'model_max': task['model_max'], 'task_id': task_id, 'delivered_at': delivered_at,
+                    })
+                    if task.get('variant'):
+                        stem = delivery_stem(task, item['no'])
+                        records[-1].update(image_file=f'{stem}.jpg', mask_file=f'{stem}_遮罩_ID.jpg',
+                                           lighting_file=f'光向参考/{stem}.png' if light['enabled'] else None)
+            self._delivering.add(task_id)
+
+        try:
+            sku = Path(plan['sku_dir'])
+            sku.mkdir(parents=True, exist_ok=True)
+            light_root = self.product_root(Path(task['product_dir']), '光向参考')
+            has_light = any(inside(f['destination'], light_root) for f in plan['files'])
+            sku_staging = sku / f'.staging-{uuid.uuid4().hex}'
+            light_staging = (light_root / f'.staging-{uuid.uuid4().hex}') if has_light else None
+            sku_staging.mkdir(parents=False, exist_ok=False)
+            if light_staging is not None:
+                light_root.mkdir(parents=True, exist_ok=True)
+                light_staging.mkdir(parents=False, exist_ok=False)
+            try:
+                # 1) 锁外先将成图、遮罩和新的白底清单.json 写入 .staging-<uuid>/
+                staged_pairs = []
+                for f in plan['files']:
+                    target = Path(f['destination'])
+                    is_light = inside(target, light_root)
+                    stage_dir = light_staging if is_light else sku_staging
+                    staged = stage_dir / target.name
+                    if f['source']:
+                        shutil.copy2(f['source'], staged)
+                    else:
+                        atomic_json(staged, records)
+                    staged_pairs.append((staged, target, is_light))
+
+                # 2) 将 sku/（及光向参考/）下同名旧文件移入 旧版/<YYYYMMDD-HHMMSS>/，不生成任何 .prev
+                archive_time = datetime.now()
+                archive = sku / '旧版' / archive_time.strftime('%Y%m%d-%H%M%S')
+                while archive.exists():
+                    archive_time += timedelta(seconds=1)
+                    archive = sku / '旧版' / archive_time.strftime('%Y%m%d-%H%M%S')
+                light_archive = light_root / '旧版' / archive.name
+                while light_archive.exists():
+                    archive_time += timedelta(seconds=1)
+                    light_archive = light_root / '旧版' / archive_time.strftime('%Y%m%d-%H%M%S')
+
+                archived_moves = []
+                placed_targets = []
+                try:
+                    for staged, target, is_light in staged_pairs:
+                        if target.exists():
+                            dest_archive = light_archive if is_light else archive
+                            dest_archive.mkdir(parents=True, exist_ok=True)
+                            archived_path = dest_archive / target.name
+                            replace_retry(target, archived_path)
+                            archived_moves.append((target, archived_path))
+                    # 3) 将 staging 里的文件原子 os.replace 进 sku/（及光向参考/）
+                    for staged, target, _ in staged_pairs:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        replace_retry(staged, target)
+                        placed_targets.append((staged, target))
+                except BaseException:
+                    for staged, target in reversed(placed_targets):
+                        try:os.replace(target, staged)
+                        except OSError:pass
+                    for target, archived_path in reversed(archived_moves):
+                        try:os.replace(archived_path, target)
+                        except OSError:pass
+                    for folder in (archive, light_archive):
+                        try:
+                            if folder.is_dir() and not any(folder.iterdir()):
+                                folder.rmdir()
+                        except OSError:
+                            pass
+                    raise
+            finally:
+                shutil.rmtree(sku_staging, ignore_errors=True)
+                if light_staging is not None:
+                    shutil.rmtree(light_staging, ignore_errors=True)
+
+            with self.lock:
+                latest_task = self.load(task_id)
+                latest_task['delivered'] = {
+                    'at': delivered_at,
+                    'sku_dir': str(sku),
+                    'files': [f['name'] for f in plan['files']],
+                    'archive_dir': str(archive) if archive.exists() else None,
+                }
+                self.save(latest_task)
+                return latest_task['delivered']
+        finally:
+            with self.lock:
+                self._delivering.discard(task_id)

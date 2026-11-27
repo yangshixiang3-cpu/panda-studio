@@ -16,7 +16,7 @@ def main():
     root = temp_root()
     studio, product, fixture = prepare_studio(root)
     shutil.copytree(ROOT/'web', root/'web')
-    shots = ROOT.parent/'codex-tasks'/'wb-14-shots'
+    shots = ROOT/'tests'/'tmp'/'ai-shots'
     shots.mkdir(parents=True, exist_ok=True)
     stop = threading.Event()
     heartbeat = RunnerHeartbeat(studio.exchange, 'fake', print)

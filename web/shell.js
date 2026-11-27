@@ -5,6 +5,7 @@ function currentPage() {
   const hash = location.hash;
   if (hash === '#refs') return 'refs';
   if (hash === '#settings') return 'settings';
+  if (hash === '#canvas') return 'canvas';
   if (hash.startsWith('#task/')) return 'task';
   return 'home';
 }
@@ -32,4 +33,12 @@ if (tablist) {
   const observer = new MutationObserver(syncTabs);
   tabs.forEach(tab => observer.observe(tab, {attributes: true, attributeFilter: ['aria-selected']}));
   syncTabs();
+}
+
+// 版本号以服务端读到的 VERSION 为准；接口不通时保留页面里写的版本
+const versionLabel = document.getElementById('app-version');
+if (versionLabel) {
+  fetch('/api/health').then(response => response.ok ? response.json() : null).then(health => {
+    if (health?.version) versionLabel.textContent = 'v' + health.version;
+  }).catch(() => {});
 }

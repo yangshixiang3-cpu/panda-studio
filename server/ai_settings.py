@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+import ipaddress
 import os
 from pathlib import Path
 import threading
@@ -40,9 +41,34 @@ def dpapi(data, *, decrypt=False):
         kernel.LocalFree(target.pbData)
 
 
+def _is_loopback_host(host):
+    if not host:
+        return False
+    if host.lower() == 'localhost':
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def url_origin(value):
+    parsed = urlsplit(str(value or '').strip())
+    if not parsed.scheme or not parsed.hostname:
+        return ''
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname.lower()
+    port = parsed.port or (443 if scheme == 'https' else 80 if scheme == 'http' else None)
+    host_part = f'[{host}]' if ':' in host else host
+    return f'{scheme}://{host_part}:{port}' if port is not None else f'{scheme}://{host_part}'
+
+
 def normalize_url(value):
     if not isinstance(value, str):
-        raise AIError('请输入 http:// 或 https:// 接口地址')
+        raise AIError('请输入 https:// 接口地址')
     value = value.strip().rstrip('/')
     if not value:
         return ''
@@ -53,8 +79,84 @@ def normalize_url(value):
                 or parsed.port == 0):
             raise ValueError
     except ValueError:
-        raise AIError('请输入有效的 http:// 或 https:// 接口地址') from None
+        raise AIError('请输入有效的 https:// 接口地址') from None
+    if parsed.scheme == 'http' and not _is_loopback_host(parsed.hostname):
+        raise AIError('公网接口地址必须使用 https://（仅本机地址允许 http://）')
     return value
+
+
+def _is_app_root(root):
+    from .core import ROOT
+    try:
+        return Path(root).resolve() == ROOT.resolve()
+    except OSError:
+        return False
+
+
+def _migrate_file(source, target):
+    """复制密钥文件 → 校验字节完全一致 → 仅校验通过后删除旧文件；目标已存在时跳过。"""
+    if not source.is_file() or target.exists():
+        return False
+    data = source.read_bytes()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(f'{uuid.uuid4().hex}.tmp')
+    try:
+        temp.write_bytes(data)
+        if temp.read_bytes() != data:
+            raise OSError('密钥迁移校验不一致')
+        os.replace(temp, target)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    if target.read_bytes() != data:
+        raise OSError('密钥迁移校验不一致')
+    source.unlink()
+    return True
+
+
+def migrate_legacy_secrets(secrets_dir, legacy_dir=None):
+    """将旧版 %APPDATA%\\whitebg-studio\\ 里的 DPAPI 密钥安全迁移到 <root>\\secrets\\。"""
+    if legacy_dir is None:
+        appdata = os.environ.get('APPDATA')
+        if os.name != 'nt' or not appdata:
+            return 0
+        legacy_dir = Path(appdata) / 'whitebg-studio'
+    else:
+        legacy_dir = Path(legacy_dir)
+    secrets_dir = Path(secrets_dir)
+    if not legacy_dir.is_dir():
+        return 0
+    try:
+        if legacy_dir.resolve() == secrets_dir.resolve():
+            return 0
+    except OSError:
+        return 0
+    migrated = 0
+    for name in ('ai_key.bin', 'image_key.bin'):
+        try:
+            if _migrate_file(legacy_dir / name, secrets_dir / name):
+                migrated += 1
+        except OSError:
+            continue
+    old_keys = legacy_dir / 'image_keys'
+    if old_keys.is_dir():
+        for entry in sorted(old_keys.glob('*.bin')):
+            try:
+                if _migrate_file(entry, secrets_dir / 'image_keys' / entry.name):
+                    migrated += 1
+            except OSError:
+                continue
+        try:
+            if not any(old_keys.iterdir()):
+                old_keys.rmdir()
+        except OSError:
+            pass
+    try:
+        if not any(legacy_dir.iterdir()):
+            legacy_dir.rmdir()
+    except OSError:
+        pass
+    return migrated
 
 
 def redact(value, key):
@@ -65,19 +167,19 @@ class AISettings:
     defaults = dict(engine='codex', base_url='', model='', reasoning_effort='medium')
 
     def __init__(self, root, key_path=None):
-        self.path = Path(root)/'ai_settings.json'
+        self.root = Path(root).resolve()
+        self.path = self.root/'ai_settings.json'
         self.key_path = Path(key_path) if key_path is not None else None
         self.lock = threading.RLock()
+        if self.key_path is None and os.name == 'nt' and _is_app_root(self.root):
+            migrate_legacy_secrets(self.root / 'secrets')
 
     def _key_file(self):
         if self.key_path is not None:
             return self.key_path
         if os.name != 'nt':
             raise AIError('仅支持 Windows 存储密钥')
-        appdata = os.environ.get('APPDATA')
-        if not appdata:
-            raise AIError('找不到 Windows 用户的应用数据目录')
-        return Path(appdata)/'whitebg-studio'/'ai_key.bin'
+        return self.root / 'secrets' / 'ai_key.bin'
 
     def _read(self):
         from .core import read_json
@@ -176,6 +278,9 @@ class AISettings:
             saved = self._read()
             fields = self._fields(saved, values or {})
             key = self._read_key()
+            if (isinstance(values, dict) and 'base_url' in values and saved.get('base_url')
+                    and url_origin(fields['base_url']) != url_origin(saved['base_url'])):
+                key = ''
             self._check_key(fields, key)
             return fields, key, self._capability(saved, fields)
 

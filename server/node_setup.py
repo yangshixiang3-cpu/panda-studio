@@ -14,6 +14,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -23,28 +24,98 @@ RULE_NAME = 'Panda Studio Render Node'
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 RUN_VALUE = 'PandaStudioRenderNode'
 PRIVATE_RANGES = 'LocalSubnet,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'
+FIREWALL_TTL_SEC = 30.0
+SERVICE_TTL_SEC = 5.0
+
+
+class _ProbeCache:
+    def __init__(self, ttl_sec, name):
+        self.ttl_sec = ttl_sec
+        self.name = name
+        self.lock = threading.Lock()
+        self.has_value = False
+        self.value = False
+        self.until = 0.0
+        self.probing = False
+        self.deps = None
+
+    def invalidate(self):
+        with self.lock:
+            self.has_value = False
+            self.until = 0.0
+
+    def get(self, fn, deps, *, sync_if_cold=True, default=False):
+        now = time.monotonic()
+        with self.lock:
+            if self.has_value and self.deps == deps:
+                if now >= self.until and not self.probing:
+                    self._spawn_locked(fn, deps)
+                return self.value
+            if not sync_if_cold:
+                if not self.probing:
+                    self._spawn_locked(fn, deps)
+                return default
+        value = fn()
+        with self.lock:
+            self.value = value
+            self.has_value = True
+            self.until = time.monotonic() + self.ttl_sec
+            self.deps = deps
+        return value
+
+    def _spawn_locked(self, fn, deps):
+        self.probing = True
+
+        def worker():
+            try:
+                val = fn()
+                with self.lock:
+                    self.value = val
+                    self.has_value = True
+                    self.until = time.monotonic() + self.ttl_sec
+                    self.deps = deps
+            finally:
+                with self.lock:
+                    self.probing = False
+
+        threading.Thread(target=worker, daemon=True, name=self.name).start()
+
+
+_firewall_cache = _ProbeCache(FIREWALL_TTL_SEC, 'whitebg-firewall-probe')
+_service_cache = _ProbeCache(SERVICE_TTL_SEC, 'whitebg-node-service-probe')
+
+
+def service_program():
+    """后台服务可执行文件路径：安装版为 PandaStudio.exe，源码运行优先用 pythonw.exe。"""
+    if getattr(sys, 'frozen', False):
+        return sys.executable
+    exe = Path(sys.executable)
+    pythonw = exe.with_name('pythonw.exe')
+    return str(pythonw if pythonw.is_file() else exe)
 
 
 def service_command(root):
     """后台服务的启动命令：安装版用 PandaStudio.exe --render-node；源码运行用 pythonw desktop.pyw --render-node。"""
     if getattr(sys, 'frozen', False):
         return [sys.executable, '--render-node']
-    exe = Path(sys.executable)
-    pythonw = exe.with_name('pythonw.exe')
-    return [str(pythonw if pythonw.is_file() else exe), str(Path(root) / 'desktop.pyw'), '--render-node']
+    return [service_program(), str(Path(root) / 'desktop.pyw'), '--render-node']
 
 
 def service_running(port=NODE_PORT):
     from .remote_client import NodeClient, RemoteError
     try:
-        NodeClient('127.0.0.1', port, timeout=1).info()
+        NodeClient('127.0.0.1', port, timeout=0.4).info()
         return True
     except RemoteError:
         return False
 
 
+_ORIG_SERVICE_RUNNING = service_running
+
+
 def start_service(root, wait=8):
     if service_running():
+        _service_cache.invalidate()
         return True
     options = {}
     if os.name == 'nt':
@@ -55,8 +126,10 @@ def start_service(root, wait=8):
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         if service_running():
+            _service_cache.invalidate()
             return True
         time.sleep(0.3)
+    _service_cache.invalidate()
     return False
 
 
@@ -100,20 +173,44 @@ def set_autostart(root, enabled):
 
 # ── 防火墙 ──
 
-def firewall_rule_exists():
+def _probe_firewall_rule():
     if os.name != 'nt':
         return True
     try:
         result = subprocess.run(['netsh', 'advfirewall', 'firewall', 'show', 'rule', f'name={RULE_NAME}'],
-                                capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+                                capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
 
 
-def firewall_commands():
-    base = (f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow profile=any '
-            f'remoteip={PRIVATE_RANGES}')
+def firewall_rule_exists(*, force=False):
+    if os.name != 'nt':
+        return True
+    if force:
+        _firewall_cache.invalidate()
+    return _firewall_cache.get(_probe_firewall_rule, (subprocess.run,))
+
+
+_ORIG_FIREWALL_EXISTS = firewall_rule_exists
+
+
+def warm_async(root=None):
+    if service_running is _ORIG_SERVICE_RUNNING:
+        _service_cache.get(service_running, (_ORIG_SERVICE_RUNNING,), sync_if_cold=False, default=False)
+    if root is not None and firewall_rule_exists is _ORIG_FIREWALL_EXISTS:
+        from .render_node import NodeState
+        try:
+            if NodeState(root).read().get('enabled'):
+                _firewall_cache.get(_probe_firewall_rule, (subprocess.run,), sync_if_cold=False, default=False)
+        except OSError:
+            pass
+
+
+def firewall_commands(program=None):
+    exe = str(program or service_program()).replace('"', '')
+    base = (f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow '
+            f'profile=domain,private program="{exe}" remoteip={PRIVATE_RANGES}')
     return f'{base} protocol=TCP localport={NODE_PORT} & {base} protocol=UDP localport={DISCOVERY_PORT}'
 
 
@@ -148,6 +245,7 @@ def add_firewall_rule():
         kernel32.WaitForSingleObject(info.hProcess, 60000)
     finally:
         kernel32.CloseHandle(info.hProcess)
+    _firewall_cache.invalidate()
     if firewall_rule_exists():
         return True, ''
     return False, '防火墙规则没加上（可能被公司策略禁止），请找 IT 放行 TCP 8775 和 UDP 8776。'
@@ -155,15 +253,26 @@ def add_firewall_rule():
 
 # ── 设置页用的整体状态 / 开关 ──
 
+def _cached_service_running():
+    if service_running is not _ORIG_SERVICE_RUNNING:
+        return service_running()
+    return _service_cache.get(service_running, (_ORIG_SERVICE_RUNNING,))
+
+
 def status(studio):
     from .render_node import NodeState, local_addresses
     from .settings import MachineSettings
 
-    state = NodeState(studio.root).read()
+    node_state = NodeState(studio.root)
+    state = node_state.read()
+    if state['enabled'] and not node_state.code_valid(state):
+        state = node_state.ensure_code()
     machine = MachineSettings(studio).read()
-    running = service_running()
+    running = _cached_service_running()
     runner = studio.runner.status()
-    return {'enabled': state['enabled'], 'running': running, 'code': state.get('code') if state['enabled'] else None,
+    return {'enabled': state['enabled'], 'running': running,
+            'code': state.get('code') if state['enabled'] else None,
+            'code_expires_at': state.get('code_expires_at') if state['enabled'] else None,
             'name': socket.gethostname(), 'addresses': local_addresses(), 'port': NODE_PORT,
             'clients': sorted(({'name': c.get('name', ''), 'paired_at': c.get('paired_at', '')}
                                for c in state['clients'].values()), key=lambda c: c['paired_at']),
@@ -186,12 +295,14 @@ def enable(studio):
         set_autostart(studio.root, True)
     except OSError as error:
         notes.append('开机自启没登记上：' + str(error))
+    _firewall_cache.invalidate()
     if not firewall_rule_exists():
         ok, message = add_firewall_rule()
         if not ok:
             notes.append(message)
     if not start_service(studio.root):
         notes.append('渲染机服务没启动起来：端口 8775 可能被别的程序占用。')
+    _service_cache.invalidate()
     result = status(studio)
     if not result['checks']['template']:
         notes.append('这台电脑缺白底模板（安装目录 template\\白底模板.max），放好之前别的电脑提交的任务会被拒绝。')
@@ -211,6 +322,7 @@ def disable(studio):
     deadline = time.monotonic() + 6
     while time.monotonic() < deadline and service_running():
         time.sleep(0.3)
+    _service_cache.invalidate()
     result = status(studio)
     result['message'] = '已停止共享，别的电脑不能再用这台出图。'
     return result

@@ -1,6 +1,8 @@
 import {previewAttributes} from './lightbox.js';
 import {cropUrlPath,installAnnotator,regionStyle} from './annotate.js';
 import {finishColorOf} from './finishes.js';
+import {fetchWithTimeout,formatError,readJsonSafe,uploadBlob} from './api.js';
+import {normalizeMaterialsDetail,summarizeMaterialBindings} from './materials.js';
 // 调整名称只在内部使用；页面显示日常中文。
 export function describeOverrides(overrides){
   if(!overrides)return [];
@@ -21,7 +23,7 @@ export function describeOverrides(overrides){
   if(light.rotate_deg)lines.push({target:'灯光',change:`方向转动 ${light.rotate_deg}°`});
   for(const [name,v] of Object.entries(light.per_light||{}))if(v.intensity_mul!==1)lines.push({target:name,change:percent(v.intensity_mul,'灯光亮度')});
   const reflection=overrides.environment?.reflection_strength_mul;
-  if(reflection!=null&&reflection!==1)lines.push({target:'环境反光',change:percent(reflection,'强度')});
+  if(reflection!=null&&reflection!==1)lines.push({target:'环境反光',change:reflection===0?'关闭环境反光':percent(reflection,'强度')});
   for(const [no,v] of Object.entries(overrides.items||{}))if(v.lights?.rotate_deg)lines.push({target:`第 ${no} 张主图`,change:`光照方向转动 ${v.lights.rotate_deg}°`});
   return lines;
 }
@@ -39,7 +41,7 @@ export function describeUsage(usage){
   return parts.join(' · ');
 }
 
-export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flush,aiSettingsUI,refresh,getTask,getBundle,prepare,updateLighting}){
+export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flush,aiSettingsUI,materialsUI,refresh,getTask,getBundle,prepare,updateLighting}){
   let signature='',sending=false,startUnavailable=false;
   const annotator=installAnnotator({$,api,escape,fileUrl});
   let editingTaskRefs=false;
@@ -62,9 +64,9 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     const previousNote=open?$('calibration-note')?.value:undefined;
     const note=previousNote??c.user_note??'';
     const active=busy(),disabled=active||sending?'disabled':'';
-    const content=`<div class="calibration-engine"><span id="calibration-engine">${escape(aiSettingsUI.description())}</span><button id="calibration-settings">设置</button></div><div class="calibration-followup"><label for="calibration-note">一句话要求（可选）</label><input type="text" id="calibration-note" maxlength="2000" value="${escape(note)}"><div class="dialog-actions">${rounds.length?`<button id="undo-calibration" ${c.accepted_round==null?'disabled':disabled}>撤销 AI 调整</button><button id="retry-calibration" ${disabled}>再调一轮</button>`:''}${active?`<span class="is-busy">AI 第 ${c.round??getBundle()?.progress?.round??0} 轮</span>`:`<button id="start-calibration" class="primary" ${sending||startUnavailable?'disabled':''}>${startUnavailable?'需要更新服务端':'开始 AI 校准'}</button>`}</div></div>${c.state==='failed'&&(!available||rounds.length)?`<p class="error">${escape(rounds.at(-1)?.error||'AI 校准失败，可直接用当前小样。')}</p>`:''}<div class="calibration-rounds">${rounds.map(r=>{
+    const content=`<div class="calibration-engine"><span id="calibration-engine">${escape(aiSettingsUI.description())}</span><button id="calibration-settings" type="button">设置</button>${materialsUI?`<button id="calibration-edit-materials" type="button" ${disabled}>编辑材质参数</button>`:''}</div><div class="calibration-followup"><label for="calibration-note">一句话要求（可选）</label><input type="text" id="calibration-note" maxlength="2000" value="${escape(note)}"><div class="dialog-actions">${rounds.length?`<button id="undo-calibration" ${c.accepted_round==null?'disabled':disabled}>撤销 AI 调整</button><button id="retry-calibration" ${disabled}>再调一轮</button>`:''}${active?`<span class="is-busy">AI 第 ${c.round??getBundle()?.progress?.round??0} 轮</span>`:`<button id="start-calibration" class="primary" ${sending||startUnavailable?'disabled':''}>${startUnavailable?'需要更新服务端':'开始 AI 校准'}</button>`}</div></div>${c.state==='failed'&&(!available||rounds.length)?`<p class="error">${escape(rounds.at(-1)?.error||'AI 校准失败，可直接用当前小样。')}</p>`:''}<div class="calibration-rounds">${rounds.map(r=>{
       const changes=describeOverrides(r.overrides),images=roundImages(r),accepted=c.accepted_round===r.n,usage=describeUsage(r.usage);
-      return `<section class="calibration-round ${accepted?'accepted':''}"><div class="round-heading"><h3>第 ${r.n} 轮${accepted?' · 已采用':''}</h3><span class="confidence">置信度 ${r.confidence==null?'待分析':Math.round(r.confidence*100)+'%'}</span></div>${usage?`<p class="round-usage">${escape(usage)}</p>`:'' }<div class="round-images">${images.map(i=>`<figure><img ${previewAttributes(fileUrl(i.path),`第 ${r.n} 轮 · ${String(i.no).padStart(2,'0')} · ${getTask().items.find(it=>it.no===i.no)?.label||'小样'}`,'calibration-rounds')} src="${fileUrl(i.path)}" alt="第 ${r.n} 轮第 ${i.no} 张小样"><figcaption>第 ${i.no} 张</figcaption></figure>`).join('')||'<p class="hint">正在等待本轮小样。</p>'}</div><p class="round-summary">${escape(r.summary||(r.error?'本轮分析未完成，可查看已出的小样。':'等待小样与分析…'))}</p>${r.error?`<p class="error">${escape(r.error)}</p>`:''}<ul class="round-changes">${changes.map(v=>`<li><strong>${escape(v.target)}</strong> → ${escape(v.change)}</li>`).join('')||'<li>本轮未增加 AI 调整。</li>'}</ul><div class="dialog-actions"><button data-accept-round="${r.n}" ${!images.length?'disabled':disabled}>${accepted?'已用这一轮':'用这一轮'}</button></div></section>`;
+      return `<section class="calibration-round ${accepted?'accepted':''}"><div class="round-heading"><h3>第 ${r.n} 轮${accepted?' · 已采用':''}</h3><span class="confidence">置信度 ${r.confidence==null?'待分析':Math.round(r.confidence*100)+'%'}</span></div>${usage?`<p class="round-usage">${escape(usage)}</p>`:'' }<div class="round-images">${images.map(i=>`<figure><img ${previewAttributes(fileUrl(i.path),`第 ${r.n} 轮 · ${String(i.no).padStart(2,'0')} · ${getTask().items.find(it=>it.no===i.no)?.label||'小样'}`,'calibration-rounds')} loading="lazy" src="${fileUrl(i.path,undefined,240)}" alt="第 ${r.n} 轮第 ${i.no} 张小样"><figcaption>第 ${i.no} 张</figcaption></figure>`).join('')||'<p class="hint">正在等待本轮小样。</p>'}</div><p class="round-summary">${escape(r.summary||(r.error?'本轮分析未完成，可查看已出的小样。':'等待小样与分析…'))}</p>${r.error?`<p class="error">${escape(r.error)}</p>`:''}<ul class="round-changes">${changes.map(v=>`<li><strong>${escape(v.target)}</strong> → ${escape(v.change)}</li>`).join('')||'<li>本轮未增加 AI 调整。</li>'}</ul><div class="dialog-actions">${materialsUI?`<button type="button" data-tweak-round="${r.n}" ${!r.overrides?'disabled':disabled}>以此轮微调</button>`:''}<button data-accept-round="${r.n}" ${!images.length?'disabled':disabled}>${accepted?'已用这一轮':'用这一轮'}</button></div></section>`;
     }).join('')||`<div class="empty">${available?'校准记录已清理':'暂无校准记录'}</div>`}</div>`;
     const prior=$('dialog'),scroll=prior.scrollTop,noteFocused=document.activeElement===$('calibration-note');
     const caret=noteFocused?[$('calibration-note').selectionStart,$('calibration-note').selectionEnd]:null;
@@ -82,7 +84,9 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     if(open)prior.scrollTop=scroll;
     if(caret){$('calibration-note').focus();$('calibration-note').setSelectionRange(...caret);}
     $('dialog-content').querySelectorAll('[data-accept-round]').forEach(b=>b.onclick=guard(()=>action({action:'accept',round:Number(b.dataset.acceptRound)})));
+    $('dialog-content').querySelectorAll('[data-tweak-round]').forEach(b=>b.onclick=guard(()=>materialsUI.openFromRound(Number(b.dataset.tweakRound))));
     $('calibration-settings').onclick=aiSettingsUI.open;
+    if($('calibration-edit-materials'))$('calibration-edit-materials').onclick=guard(()=>materialsUI.open());
     if($('undo-calibration'))$('undo-calibration').onclick=guard(()=>action({action:'undo'}));
     if($('retry-calibration'))$('retry-calibration').onclick=guard(()=>action({action:'retry',user_note:$('calibration-note').value}));
     if($('start-calibration'))$('start-calibration').onclick=guard(()=>action({action:'start',user_note:$('calibration-note').value}));
@@ -90,12 +94,18 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
   function renderTaskRefs(){
     const refs=calibration().task_refs||[];
     const names=[...new Set(refs.flatMap(entry=>entry.regions.map(region=>region.material)))];
+    const mappings=summarizeMaterialBindings(normalizeMaterialsDetail(getBundle(),getTask()));
+    const mapHtml=mappings.length?`<div class="calibration-ref-map" aria-label="场景材质与参考材质对应关系">
+      <span class="ref-map-label">参考对应</span>
+      ${mappings.map(m=>`<span class="ref-map-chip mode-${m.mode}" title="${escape(m.tooltip)}"><b>${escape(m.name)}</b><i aria-hidden="true">→</i><span>${escape(m.targetText)}</span>${m.badge?`<em>${escape(m.badge)}</em>`:''}</span>`).join('')}
+      ${materialsUI?`<button type="button" class="plain ref-map-edit" data-open-materials ${busy()||sending?'disabled':''}>修改对应…</button>`:''}
+    </div>`:'';
     $('dialog-content').querySelector('.calibration-followup').insertAdjacentHTML('beforebegin',`
       <section class="calibration-refs" aria-label="材质参考">
-        <h3>材质参考 <small class="hint">${refs.length?`本任务 ${refs.length} 张，AI 校准时优先参考`:'可选：给 AI 指定某种材质该是什么样'}</small></h3>
+        <h3>材质参考 <small class="hint">${refs.length?`本任务 ${refs.length} 张，AI 校准时优先参考；框过的图会自动存进参考库`:'可选：给 AI 指定某种材质该是什么样；加的图框好后会自动存进参考库'}</small></h3>
         <div class="calibration-ref-list">${refs.map(entry=>`<div class="calibration-ref-card">
           <button type="button" class="annotation-preview" data-calibration-ref="${entry.id}" title="${escape(entry.name)}" aria-label="${escape(entry.name)}">
-            <span class="annotation-preview-fit"><img src="${fileUrl(refPath(entry),'')}" alt="" draggable="false">
+            <span class="annotation-preview-fit"><img loading="lazy" src="${fileUrl(refPath(entry),'',320)}" alt="" draggable="false">
             ${entry.regions.map(region=>`<span class="annotation-outline" style="${regionStyle(region.box,region.material,names)}"></span>`).join('')}</span>
           </button><button type="button" class="calibration-ref-remove" data-remove-ref="${entry.id}" aria-label="删除 ${escape(entry.name)}">×</button>
         </div>`).join('')}
@@ -103,9 +113,12 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
         <button type="button" id="calibration-ref-add">添加并标注…</button>
         <input type="file" id="calibration-ref-input" multiple accept=".jpg,.jpeg,.png,.webp" hidden>
         </div>
+        ${mapHtml}
       </section>`);
     $('calibration-ref-library').onclick=guard(openLibraryPicker);
     $('calibration-ref-add').onclick=()=>$('calibration-ref-input').click();
+    const openMatBtn=$('dialog-content').querySelector('[data-open-materials]');
+    if(openMatBtn)openMatBtn.onclick=guard(()=>materialsUI.open());
     $('calibration-ref-input').onchange=guard(event=>{
       const inputs=[...event.target.files].map(file=>({file}));
       event.target.value='';
@@ -124,7 +137,7 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     if(dialog)return dialog;
     document.body.insertAdjacentHTML('beforeend',`<dialog id="ref-pick-dialog" class="ref-pick" aria-labelledby="ref-pick-title">
       <header class="ref-pick-head"><div><h2 id="ref-pick-title">从参考库选材质参考</h2>
-        <p class="hint">点图选中，可以跨材质多选。选好后逐张框出图里对应材质的位置，材质名已帮你填好。</p></div>
+        <p class="hint">点图选中，可以跨材质多选。带「标注」的是以前框过的图（包括以前 AI 校准用过的），框已经画好；其余的选好后逐张框出对应材质的位置。</p></div>
         <button type="button" class="ref-pick-close" data-pick-cancel aria-label="关闭">×</button></header>
       <div class="ref-pick-body"><nav class="ref-pick-materials" role="tablist" aria-label="材质"></nav>
         <div class="ref-pick-grid" role="listbox" aria-multiselectable="true"></div></div>
@@ -135,15 +148,20 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     dialog.querySelectorAll('[data-pick-cancel]').forEach(b=>b.onclick=()=>dialog.close());
     dialog.querySelector('.ref-pick-materials').onclick=e=>{const tab=e.target.closest('[data-material]');if(tab){pick.material=tab.dataset.material;renderPick();}};
     dialog.querySelector('.ref-pick-grid').onclick=e=>{
-      const card=e.target.closest('[data-file]');if(!card)return;
-      const file=card.dataset.file;
-      if(pick.selected.has(file))pick.selected.delete(file);
-      else pick.selected.set(file,{file,material:pick.material,source:card.dataset.source});
+      const card=e.target.closest('[data-pick]');if(!card)return;
+      const key=card.dataset.pick;
+      if(pick.selected.has(key))pick.selected.delete(key);
+      else{
+        const item=(pick.groups.find(([name])=>name===pick.material)?.[1]||[]).find(entry=>pickKey(entry)===key);
+        if(item)pick.selected.set(key,{...item,material:pick.material});
+      }
       renderPick();
     };
     dialog.querySelector('[data-pick-next]').onclick=guard(confirmPick);
     return dialog;
   }
+  // 每张可选的图：参考库认可的图（file），或标注参考图里这个材质的框（file + region，显示裁图）
+  const pickKey=entry=>entry.region===undefined?entry.file:`${entry.file}#${entry.region}`;
   function renderPick(){
     const dialog=pickDialog(),selected=[...pick.selected.values()];
     dialog.querySelector('.ref-pick-materials').innerHTML=pick.groups.map(([key,list])=>{
@@ -154,12 +172,15 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     }).join('');
     const list=pick.groups.find(([key])=>key===pick.material)?.[1]||[];
     dialog.querySelector('.ref-pick-grid').innerHTML=list.map(entry=>{
-      const on=pick.selected.has(entry.file);
-      return `<button type="button" class="ref-pick-card" role="option" aria-selected="${on}" data-file="${escape(entry.file)}" data-source="${escape(entry.source||'')}">
-        <img loading="lazy" src="${fileUrl(entry.file,'')}" alt="${escape(pick.material)}参考图">
-        ${entry.builtin?'<span class="ref-pick-builtin">内置</span>':''}<span class="ref-pick-check" aria-hidden="true"></span>
+      const key=pickKey(entry),on=pick.selected.has(key),crop=entry.region!==undefined;
+      const src=crop?`${fileUrl(cropUrlPath(entry.file,entry.region),'',360)}&v=${encodeURIComponent(JSON.stringify(entry.box))}`:fileUrl(entry.file,'',360);
+      const badge=crop?`<span class="ref-pick-builtin ref-pick-annotated">${String(entry.source||'').startsWith('任务 ')?'校准用过':'标注'}</span>`
+        :entry.builtin?'<span class="ref-pick-builtin">内置</span>':'';
+      return `<button type="button" class="ref-pick-card" role="option" aria-selected="${on}" data-pick="${escape(key)}">
+        <img loading="lazy" src="${src}" alt="${escape(pick.material)}参考图">
+        ${badge}<span class="ref-pick-check" aria-hidden="true"></span>
         <span class="ref-pick-caption" title="${escape(entry.source||'')}">${escape(fileName(entry.source||entry.file))}</span></button>`;
-    }).join('')||'<p class="hint">这个材质还没有认可的参考图。</p>';
+    }).join('')||'<p class="hint">这个材质还没有认可或标注过的参考图。</p>';
     dialog.querySelector('.ref-pick-count').textContent=selected.length?`已选 ${selected.length} 张`:'还没选';
     const next=dialog.querySelector('[data-pick-next]');
     next.disabled=!selected.length;next.textContent=selected.length?`下一步：框选材质（${selected.length}）`:'下一步：框选材质';
@@ -167,9 +188,12 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
   async function openLibraryPicker(){
     if(editingTaskRefs||!calibrationOpen())return;
     const library=await api('/api/refs');
+    // 每个材质：先列标注过的框（以前 AI 校准用过的图都自动存成了标注），再列认可的图
+    const crops=key=>(library.annotated||[]).flatMap(entry=>entry.regions.map((region,index)=>({file:entry.file,source:entry.source,
+      region:index,box:region.box,material:region.material})).filter(item=>item.material===key));
     pick.groups=Object.entries(library.materials)
-      .map(([key,group])=>[key,group.images.filter(image=>image.status==='approved')]).filter(([,list])=>list.length);
-    if(!pick.groups.length)return toast('参考库里还没有认可的材质图，可以先到「参考库」页添加。');
+      .map(([key,group])=>[key,[...crops(key),...group.images.filter(image=>image.status==='approved')]]).filter(([,list])=>list.length);
+    if(!pick.groups.length)return toast('参考库里还没有认可或标注过的材质图，可以先到「参考库」页添加。');
     pick.selected.clear();
     // 默认打开和场景材质同名的分组（如果有）
     const scene=getBundle()?.scene_materials||[];
@@ -181,12 +205,16 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     if(!chosen.length)return;
     const next=dialog.querySelector('[data-pick-next]');next.disabled=true;next.textContent='正在取图…';
     try{
-      const inputs=[];
-      for(const {file,material,source} of chosen){
+      const inputs=[],annotated=new Map();
+      for(const {file,material,source,region,box} of chosen){
+        // 同一张标注图选了好几个材质的框：合成一张，框都带上
+        if(region!==undefined&&annotated.has(file)){annotated.get(file).regions.push({material,material_source:'library',box});continue;}
         const response=await fetch(fileUrl(file,''));
         if(!response.ok)throw new Error('参考图读取失败：'+fileName(source||file));
         const blob=await response.blob();
-        inputs.push({file:new File([blob],fileName(source||file),{type:blob.type||'image/jpeg'}),material});
+        const input={file:new File([blob],fileName(source||file),{type:blob.type||'image/jpeg'}),material};
+        if(region!==undefined){Object.assign(input,{libraryFile:file,regions:[{material,material_source:'library',box}]});annotated.set(file,input);}
+        inputs.push(input);
       }
       dialog.close();
       await editTaskRefs(inputs);
@@ -213,18 +241,18 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
         try{
           let {entry,file,source,material}=input;
           if(source){
-            const response=await fetch('/api/refs/annotated/source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
-            if(!response.ok)throw new Error((await response.json()).error);
+            const response=await fetchWithTimeout('/api/refs/annotated/source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
+            if(!response.ok)throw new Error(formatError(response,await readJsonSafe(response),'参考图读取失败'));
             file=await response.blob();
           }
           if(!entry){
             if(file.size>50*1024*1024)throw new Error('单张图片不能超过 50 MB。');
             if(!active())break;
             const name=source?source.replaceAll('\\','/').split('/').pop():file.name;
-            const response=await fetch(refEndpoint(id)+'upload?'+new URLSearchParams({name}),{method:'POST',body:file});
-            const result=await response.json();
-            if(!response.ok)throw new Error(result.error||'图片上传失败。');
+            const query={name,...(input.libraryFile?{from:input.libraryFile}:{})};
+            const result=await uploadBlob(refEndpoint(id)+'upload?'+new URLSearchParams(query),file,{fallback:'图片上传失败'});
             entry=result.entry;
+            if(input.regions?.length)entry=(await api(refEndpoint(id)+entry.id,{regions:input.regions},'PUT')).entry;
             if(active())await refresh();
           }
           if(!active())break;
@@ -233,14 +261,14 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
             .filter(region=>region.material_source==='new').map(region=>region.material));
           const result=await annotator.open(entry,materials,-1,null,{
             path:refPath(entry),sceneMaterials:getBundle().scene_materials||[],newMaterials,defaultMaterial:material,
-            save:async(regions,in_library)=>{
-              await api(refEndpoint(id)+entry.id,{regions,in_library},'PUT');
-              savedToLibrary=in_library;
+            save:async regions=>{
+              await api(refEndpoint(id)+entry.id,{regions},'PUT');
+              savedToLibrary=regions.length>0;
             }
           });
           if(result==='changed'&&active()){
             await refresh();
-            if(savedToLibrary)toast('已加入参考库。场景材质和新材质的框只用于本任务。');
+            if(savedToLibrary)toast('已存进参考库：在「参考库」对应材质下、「从参考库选」里都能找到');
           }
         }catch(error){toast(error.message);}
       }
@@ -281,19 +309,20 @@ export function installCalibrationUI({$,api,escape,fileUrl,modal,guard,toast,flu
     $('accepted-dot').title=c.accepted_round==null?'':`已采用第 ${c.accepted_round} 轮调整`;
     if($('lighting-disk').getAttribute('aria-disabled')!==String(active)&&!$('lighting-panel').hidden)updateLighting();
     if($('dialog').open&&$('dialog').dataset.view==='calibration'){
-      const current=JSON.stringify([c,getBundle()?.jobs,getBundle()?.available_rounds,getBundle()?.scene_materials]);
+      const current=JSON.stringify([c,getBundle()?.jobs,getBundle()?.available_rounds,getBundle()?.scene_materials,getBundle()?.materials_detail]);
       if(current!==signature){signature=current;renderHistory();}
     }
   }
-  $('calibration-history').onclick=()=>{
+  function open(){
     renderHistory();
     aiSettingsUI.refresh().catch(error=>{
       const label=$('calibration-engine');
       if(label)label.textContent='无法读取 AI 设置';
       if(error.status&&error.status!==404)toast(error.message);
     });
-  };
-  return {render,busy,calibrationOpen,
+  }
+  $('calibration-history').onclick=open;
+  return {open,render,busy,calibrationOpen,
     dropTaskFiles:files=>editTaskRefs(files.map(file=>({file}))),
     dropTaskPaths:paths=>editTaskRefs(paths.map(source=>({source}))),
     ...installReferenceLibrary({$,api,escape,fileUrl,modal,guard,toast,annotator})};
@@ -323,7 +352,7 @@ function installReferenceLibrary({$,api,escape,fileUrl,modal,guard,toast,annotat
   function renderAnnotated(materials){
     $('annotated-count').textContent=library.annotated.length+' 张';
     annotatedGrid.innerHTML=library.annotated.map((entry,index)=>`<button type="button" class="ref-card annotation-card" data-annotation="${index}">
-      <span class="annotation-preview"><span class="annotation-preview-fit"><img src="${fileUrl(entry.file,'')}" alt="">
+      <span class="annotation-preview"><span class="annotation-preview-fit"><img loading="lazy" src="${fileUrl(entry.file,'',360)}" alt="">
       ${entry.regions.map(region=>`<span class="annotation-outline" style="${regionStyle(region.box,region.material,materials)}"></span>`).join('')}</span></span>
       <span class="annotation-caption" title="${escape(entry.source)}">${escape(sourceName(entry.source))}</span><small>${entry.regions.length} 个框</small>
       </button>`).join('');
@@ -337,7 +366,7 @@ function installReferenceLibrary({$,api,escape,fileUrl,modal,guard,toast,annotat
     const crops=new Map(materials.map(key=>[key,[]]));
     library.annotated.forEach((entry,index)=>entry.regions.forEach((region,regionIndex)=>{
       crops.get(region.material)?.push(`<button type="button" class="ref-card approved annotation-card" data-annotation="${index}" data-annotation-region="${regionIndex}">
-        <span class="annotation-badge">标注</span><img loading="lazy" src="${fileUrl(cropUrlPath(entry.file,regionIndex),'')}&v=${encodeURIComponent(JSON.stringify(region.box))}" alt="${escape(region.material)}裁图">
+        <span class="annotation-badge">${entry.source.startsWith('任务 ')?'校准':'标注'}</span><img loading="lazy" src="${fileUrl(cropUrlPath(entry.file,regionIndex),'',360)}&v=${encodeURIComponent(JSON.stringify(region.box))}" alt="${escape(region.material)}裁图">
         <span class="annotation-caption" title="${escape(entry.source)}">${escape(sourceName(entry.source))}</span></button>`);
     }));
     groupsElement.innerHTML=groups.map(([key,images])=>{
@@ -345,7 +374,7 @@ function installReferenceLibrary({$,api,escape,fileUrl,modal,guard,toast,annotat
       const count=images.length+annotated.length,approved=images.filter(i=>i.status==='approved').length+annotated.length;
       const cards=images.map(entry=>`<article class="ref-card ${entry.status}">
         ${entry.builtin?'<span class="annotation-badge builtin-badge" title="随软件内置，升级时会自动补齐">内置</span>':''}
-        <img ${previewAttributes(fileUrl(entry.file,''),sourceName(entry.source),`library-${key}`)} loading="lazy" src="${fileUrl(entry.file,'')}" alt="${label}参考图">
+        <img ${previewAttributes(fileUrl(entry.file,''),sourceName(entry.source),`library-${key}`)} loading="lazy" src="${fileUrl(entry.file,'',360)}" alt="${label}参考图">
         <p class="hint" title="${escape(entry.source)}">${escape(sourceName(entry.source))}</p>
         <div class="ref-card-actions"><span>${statusText[entry.status]}</span>
           <button data-ref-status="approved" data-file="${escape(entry.file)}" ${entry.status==='approved'?'disabled':''}>认可</button>
@@ -385,8 +414,8 @@ function installReferenceLibrary({$,api,escape,fileUrl,modal,guard,toast,annotat
         try{
           let blob=file;
           if(source){
-            const response=await fetch('/api/refs/annotated/source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
-            if(!response.ok)throw new Error((await response.json()).error);
+            const response=await fetchWithTimeout('/api/refs/annotated/source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
+            if(!response.ok)throw new Error(formatError(response,await readJsonSafe(response),'参考图读取失败'));
             blob=await response.blob();
           }
           if(blob?.size>50*1024*1024)throw new Error('单张图片不能超过 50 MB。');
@@ -407,8 +436,7 @@ function installReferenceLibrary({$,api,escape,fileUrl,modal,guard,toast,annotat
   async function upload(key,files){
     for(const file of files){
       if(file.size>50*1024*1024)throw new Error('单张图片不能超过 50 MB。');
-      const response=await fetch('/api/refs/upload?'+new URLSearchParams({key,name:file.name}),{method:'POST',body:file});
-      const result=await response.json();if(!response.ok)throw new Error(result.error||'图片上传失败。');
+      await uploadBlob('/api/refs/upload?'+new URLSearchParams({key,name:file.name}),file,{fallback:'图片上传失败'});
     }
     await showRefs();toast('图片已加入参考库，请核对后认可。');
   }

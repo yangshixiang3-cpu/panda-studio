@@ -1,3 +1,5 @@
+import {uploadBlob} from './api.js';
+
 export const cropUrlPath=(file,index)=>file.replace(/\/([^/]+)\.jpg$/,'/crops/$1-'+(index+1)+'.jpg');
 
 export function regionStyle(box,material,materials){
@@ -254,12 +256,11 @@ export function installAnnotator({$,api,escape,fileUrl}){
     });
   };
   $('annotate-save').onclick=()=>submit(async()=>{
-    if(taskOptions)await taskOptions.save(regions,$('annotate-in-library').checked);
+    if(taskOptions)await taskOptions.save(regions);
     else if(entry.file)await api('/api/refs/annotated',{action:'update',file:entry.file,regions});
     else{
       const metadata=JSON.stringify({source:entry.source,regions})+'\n';
-      const response=await fetch('/api/refs/annotated/upload',{method:'POST',body:new Blob([metadata,blob])});
-      if(!response.ok)throw new Error((await response.json()).error||'保存标注失败。');
+      await uploadBlob('/api/refs/annotated/upload',new Blob([metadata,blob]),{fallback:'保存标注失败'});
     }
     dialog.close('changed');
   });
@@ -284,7 +285,6 @@ export function installAnnotator({$,api,escape,fileUrl}){
     $('annotate-library-label').hidden=Boolean(task);
     $('annotate-new-material').hidden=Boolean(task);
     $('annotate-library-choice').hidden=!task;
-    $('annotate-in-library').checked=task?entry.in_library:false;
     closePicker();
     if(task){
       const choices=(source,names)=>names.map(material=>({material,material_source:source}));

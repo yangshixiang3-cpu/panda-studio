@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .remote_protocol import (DISCOVER_MAGIC, DISCOVERY_PORT, NODE_PORT, SERVICE, ProtocolError, bundle_files,
-                              bundle_id, local_path, portable_job, write_bundle)
+                              bundle_id, local_path, portable_job, safe_output_rel, write_bundle)
 
 SETTINGS_FILE = 'remote_nodes.json'
 TERMINAL = ('done', 'failed')
@@ -247,6 +247,7 @@ class RemoteBridge:
         self.cache = studio.exchange / 'remote-cache'
         self.lock = threading.RLock()
         self.active = None              # 还没结束的转发作业 {job_id}
+        self._sending = set()           # 正在发送中的作业（防止切换渲染位置时并发删状态导致两边同时跑）
         self.infos = {}                 # {(主机, 端口): (时间, 信息或错误)}
         self.stopping = threading.Event()
         self.thread = None
@@ -434,8 +435,10 @@ class RemoteBridge:
         return True
 
     def _retarget_pending(self, target):
-        """换了渲染位置：还没发出去的作业跟着换；选回本机就把状态文件删掉，交还本机执行器。"""
+        """换了渲染位置：还没发出去的作业跟着换；选回本机就把状态文件删掉，交还本机执行器。正在发送中的跳过。"""
         for job_id in list(self._load_active()):
+            if job_id in self._sending:
+                continue
             status = self._read(self._status_path(job_id))
             if not status or not status.get('remote') or status['remote'].get('phase') != 'pending':
                 continue
@@ -460,22 +463,54 @@ class RemoteBridge:
         for job_id in job_ids:
             if self.stopping.is_set():
                 return
-            status = self._read(self._status_path(job_id))
-            job = self._read(self.jobs_dir / (job_id + '.json'))
-            if not status or not status.get('remote') or status.get('state') in TERMINAL or not job:
-                if status is None or not job or status.get('state') in TERMINAL:
-                    with self.lock:
+            action = None
+            with self.lock:
+                status = self._read(self._status_path(job_id))
+                job = self._read(self.jobs_dir / (job_id + '.json'))
+                if not status or not status.get('remote') or status.get('state') in TERMINAL or not job:
+                    if status is None or not job or status.get('state') in TERMINAL:
                         self.active.discard(job_id)
-                continue
+                    continue
+                phase = status['remote'].get('phase')
+                if phase in ('pending', 'sending'):
+                    if job_id in self._sending:
+                        continue
+                    status['remote']['phase'] = 'sending'
+                    self._write_status(job_id, status)
+                    self._sending.add(job_id)
+                    action = 'send'
+                else:
+                    action = 'poll'
             try:
-                if status['remote'].get('phase') == 'pending':
+                if action == 'send':
                     self._send(job, status)
                 else:
                     self._poll(job, status)
             except RemoteError as error:
+                if action == 'send':
+                    self._revert_sending(job_id, status)
                 self._note_error(job, status, error)
             except ProtocolError as error:
                 self._fail(job, status, str(error))
+            except Exception:
+                if action == 'send':
+                    self._revert_sending(job_id, status)
+                raise
+            finally:
+                if action == 'send':
+                    with self.lock:
+                        self._sending.discard(job_id)
+
+    def _revert_sending(self, job_id, status):
+        """发送失败（如渲染机离线）：把 phase 退回 pending，方便重试或切回本机。"""
+        with self.lock:
+            current = self._read(self._status_path(job_id))
+            if current and current.get('remote') and current['remote'].get('phase') == 'sending':
+                current['remote']['phase'] = 'pending'
+                self._write_status(job_id, current)
+                status['remote']['phase'] = 'pending'
+            elif status.get('remote') and status['remote'].get('phase') == 'sending':
+                status['remote']['phase'] = 'pending'
 
     def _note_error(self, job, status, error):
         remote = status['remote']
@@ -489,22 +524,34 @@ class RemoteBridge:
             message = f'渲染机 {remote["name"]} 连不上，恢复后自动发送。'
         else:
             message = f'渲染机 {remote["name"]} 暂时连不上，任务还在那边，连上后继续同步。'
-        if status.get('message') != message:
-            status['message'] = message
-            self._write_status(job['job_id'], status)
+        with self.lock:
+            current = self._read(self._status_path(job['job_id']))
+            if not current or not current.get('remote') or current.get('state') in TERMINAL:
+                return
+            if current.get('message') != message:
+                current['message'] = message
+                self._write_status(job['job_id'], current)
 
     def _fail(self, job, status, message):
-        status.update(state='failed', message=message)
-        for item in status.get('items', []):
-            if item.get('state') not in TERMINAL:
-                item.update(state='failed', message=message)
-        self._write_status(job['job_id'], status)
         with self.lock:
+            status.update(state='failed', message=message)
+            for item in status.get('items', []):
+                if item.get('state') not in TERMINAL:
+                    item.update(state='failed', message=message)
+            self._write_status(job['job_id'], status)
             self.active.discard(job['job_id'])
+
+    def _still_sending_to(self, job_id, host, port):
+        current = self._read(self._status_path(job_id))
+        remote = current.get('remote') if current else None
+        return (bool(current) and bool(remote) and current.get('state') not in TERMINAL
+                and remote.get('phase') == 'sending'
+                and remote.get('host') == host and remote.get('port') == port)
 
     def _send(self, job, status):
         remote = status['remote']
-        client = self.client(remote['host'], remote['port'], timeout=10)
+        host, port, name = remote['host'], remote['port'], remote['name']
+        client = self.client(host, port, timeout=10)
         if not client.token:
             raise RemoteError('需要先配对。', 401)
         task = self.studio.load(job['task_id'])
@@ -512,18 +559,31 @@ class RemoteBridge:
         bundle = bundle_id(max_rel, files)
         if not client.has_bundle(bundle):
             size = sum(f[2] for f in files)
-            status['message'] = f'正在把模型传到渲染机 {remote["name"]}（{size / 1024 / 1024:.0f} MB）…'
-            self._write_status(job['job_id'], status)
+            with self.lock:
+                if not self._still_sending_to(job['job_id'], host, port):
+                    return
+                status['message'] = f'正在把模型传到渲染机 {name}（{size / 1024 / 1024:.0f} MB）…'
+                self._write_status(job['job_id'], status)
             archive = write_bundle(files, self.cache / 'outgoing' / (bundle + '.zip'))
             try:
                 client.put_bundle(bundle, archive)
             finally:
                 archive.unlink(missing_ok=True)
+        with self.lock:
+            if not self._still_sending_to(job['job_id'], host, port):
+                return
         payload = {'job': portable_job(job, self.exchange, base, max_rel), 'bundle': bundle}
         client.put_job(job['job_id'], payload)
-        remote.update(phase='sent', bundle=bundle)
-        status['message'] = f'已发送到渲染机 {remote["name"]}，排队中。'
-        self._write_status(job['job_id'], status)
+        with self.lock:
+            current = self._read(self._status_path(job['job_id']))
+            cur_remote = current.get('remote') if current else None
+            if (not current or not cur_remote or current.get('state') in TERMINAL
+                    or cur_remote.get('phase') != 'sending'
+                    or cur_remote.get('host') != host or cur_remote.get('port') != port):
+                return
+            cur_remote.update(phase='sent', bundle=bundle)
+            current['message'] = f'已发送到渲染机 {name}，排队中。'
+            self._write_status(job['job_id'], current)
 
     def _poll(self, job, status):
         remote = status['remote']
@@ -533,7 +593,7 @@ class RemoteBridge:
         files = remote.setdefault('files', {})
         # 先把结果文件下载回来，再更新状态：本机看到「完成」时文件一定已经在了
         for output in data.get('outputs') or []:
-            rel = str(output.get('path', ''))
+            rel = safe_output_rel(output.get('path', ''))
             stamp = [output.get('size'), output.get('mtime_ns')]
             if files.get(rel) == stamp:
                 continue

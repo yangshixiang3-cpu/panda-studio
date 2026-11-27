@@ -186,16 +186,37 @@ export function installRunner({api,toast,refreshTask}){
     if(status?.online){clearTimeout(deadline);starting=false;}
     render();
   }
+  let homeTimer=null,homeActive=false;
+  const HOME_POLL_MS=5000;
+  const isHomeVisible=()=>homeActive&&!document.hidden&&!document.getElementById('start-page')?.hidden;
+  function stopHomePoll(){
+    if(homeTimer){clearTimeout(homeTimer);homeTimer=null;}
+  }
+  function scheduleHomePoll(){
+    stopHomePoll();
+    if(!isHomeVisible())return;
+    homeTimer=setTimeout(()=>{homeTimer=null;if(isHomeVisible())readHome();},HOME_POLL_MS);
+  }
   function readHome(){
+    homeActive=!document.getElementById('start-page')?.hidden;
+    if(document.hidden){stopHomePoll();return Promise.resolve();}
     if(!homeRequest)homeRequest=api('/api/runner').then(
       data=>{if(!document.getElementById('start-page').hidden)update(data.runner??data);},
       ()=>{if(!document.getElementById('start-page').hidden)update(null);}
-    ).finally(()=>homeRequest=null);
+    ).finally(()=>{homeRequest=null;scheduleHomePoll();});
     return homeRequest;
   }
-  setInterval(()=>{if(!document.getElementById('start-page').hidden)readHome();},5000);
+  function setHomeActive(active){
+    homeActive=Boolean(active);
+    if(!homeActive||document.hidden){stopHomePoll();return;}
+    readHome();
+  }
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden)stopHomePoll();
+    else if(isHomeVisible())readHome();
+  });
   render();
-  return {update,readHome,queued(){
+  return {update,readHome,setHomeActive,queued(){
     if(status?.online!==false)return false;
     const chip=chips.find(({host})=>!host.closest('section').hidden)?.chip;
     chip?.animate([{boxShadow:'0 0 0 3px #f8717199'},{boxShadow:'0 0 0 0 transparent'}],650);

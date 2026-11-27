@@ -15,7 +15,7 @@ from uuid import uuid4
 
 
 MAX_DIR = Path(__file__).resolve().parents[1]
-TMP_DIR = MAX_DIR.parents[1] / "codex-tasks" / "wb-24-tmp"
+TMP_DIR = MAX_DIR.parent / "tests" / "tmp" / "max-tests"
 sys.path.insert(0, str(MAX_DIR))
 import wb_core as core
 
@@ -477,7 +477,8 @@ class RunnerContractTests(unittest.TestCase):
         self.runner = object.__new__(self.module.Runner)
         self.runner.log = mock.Mock()
         self.runner.flush = mock.Mock()
-        self.runner.exchange = MAX_DIR / "测试交换目录"
+        TMP_DIR.mkdir(parents=True, exist_ok=True)
+        self.runner.exchange = TMP_DIR / ("runner-" + uuid4().hex[:8])
         self.runner.config = {"smallshot_time_limit_sec": 25}
         self.runner.job = {"mode": "smallshot", "time_limit_sec": 25, "task_id": "任务1"}
         self.runtime.hasProperty.side_effect = lambda obj, name: hasattr(obj, name)

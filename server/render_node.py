@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -32,7 +32,12 @@ from .remote_protocol import (BUNDLE_ID_RE, BUNDLE_MAX_BYTES, DISCOVER_MAGIC, DI
 STATE_FILE = 'render_node.json'
 KEEP_DAYS = 14
 PAIR_FAILURE_LIMIT = 5
+PAIR_GLOBAL_FAILURE_LIMIT = 20
 PAIR_WINDOW_SEC = 600
+PAIR_LOCK_SEC = 600
+PAIR_CODE_TTL_SEC = 600
+HANDLER_TIMEOUT_SEC = 15
+MAX_CONCURRENT_REQUESTS = 16
 TERMINAL = ('done', 'failed')
 LOG_BYTES = 1024 * 1024
 NODE_JOB_RE = re.compile(r'^(\d{8}-\d{6}-[0-9a-f]{4})-([0-9a-f]{8})$')
@@ -94,6 +99,10 @@ def token_key(token):
     return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
 
+def _future(seconds):
+    return (datetime.now().astimezone() + timedelta(seconds=seconds)).isoformat(timespec='seconds')
+
+
 class NodeState:
     """render_node.json：是否开启、连接码、已配对的电脑（只存令牌的哈希）。工作台和后台服务两个进程都会读写。"""
 
@@ -123,19 +132,37 @@ class NodeState:
 
     def write(self, data):
         _atomic_json(self.path, data)
+        self._cache = (None, None)
+
+    @staticmethod
+    def code_valid(data, now_ts=None):
+        if not re.fullmatch(r'\d{6}', str(data.get('code', ''))):
+            return False
+        expires = epoch(data.get('code_expires_at'))
+        return expires is not None and expires > (time.time() if now_ts is None else now_ts)
+
+    @staticmethod
+    def _set_new_code(data):
+        old = data.get('code')
+        code = f'{secrets.randbelow(10 ** 6):06d}'
+        while code == old:
+            code = f'{secrets.randbelow(10 ** 6):06d}'
+        data['code'] = code
+        data['code_expires_at'] = _future(PAIR_CODE_TTL_SEC)
+        return data
 
     def ensure_code(self):
         with self.lock:
             data = self.read()
-            if not re.fullmatch(r'\d{6}', str(data.get('code', ''))):
-                data['code'] = f'{secrets.randbelow(10 ** 6):06d}'
+            if not self.code_valid(data):
+                self._set_new_code(data)
                 self.write(data)
             return data
 
     def regenerate_code(self):
         with self.lock:
             data = self.read()
-            data['code'] = f'{secrets.randbelow(10 ** 6):06d}'
+            self._set_new_code(data)
             self.write(data)
             return data
 
@@ -155,11 +182,18 @@ class NodeState:
 
     def pair(self, code, client_name):
         with self.lock:
-            data = self.ensure_code()
+            data = self.read()
+            if not self.code_valid(data):
+                # 连接码已过期：生成新码并拒绝旧码
+                self._set_new_code(data)
+                self.write(data)
+                return None
             if not secrets.compare_digest(str(code).strip(), data['code']):
                 return None
             token = secrets.token_urlsafe(24)
             data['clients'][token_key(token)] = {'name': str(client_name or '未命名电脑')[:60], 'paired_at': _now()}
+            # 配对成功后自动轮换连接码，不影响已配对令牌
+            self._set_new_code(data)
             self.write(data)
             return token
 
@@ -188,6 +222,8 @@ class RenderNode:
         self.runner = RunnerStatus(self.root, self.exchange, self.config)
         self.lock = threading.RLock()
         self.failures = {}
+        self.global_failures = []
+        self.pair_locked_until = 0.0
         self.name = socket.gethostname()
         self.log_path = self.exchange / 'render_node.log'
 
@@ -233,14 +269,26 @@ class RenderNode:
     def pair(self, address, code, client_name):
         now = time.time()
         with self.lock:
-            attempts = [t for t in self.failures.get(address, []) if now - t < PAIR_WINDOW_SEC]
+            for ip in list(self.failures):
+                kept = [t for t in self.failures[ip] if now - t < PAIR_WINDOW_SEC]
+                if kept:
+                    self.failures[ip] = kept
+                else:
+                    del self.failures[ip]
+            self.global_failures = [t for t in self.global_failures if now - t < PAIR_WINDOW_SEC]
+            if now < self.pair_locked_until:
+                raise NodeError('连接码输错次数太多，配对已暂停，请 10 分钟后再试。', 429)
+            attempts = self.failures.get(address, [])
             if len(attempts) >= PAIR_FAILURE_LIMIT:
                 raise NodeError('连接码输错次数太多，请 10 分钟后再试。', 429)
             token = self.state.pair(code, client_name)
             if token is None:
                 attempts.append(now)
                 self.failures[address] = attempts
-                raise NodeError('连接码不对。请看渲染机「本机设置」里显示的 6 位连接码。', 403)
+                self.global_failures.append(now)
+                if len(self.global_failures) >= PAIR_GLOBAL_FAILURE_LIMIT:
+                    self.pair_locked_until = now + PAIR_LOCK_SEC
+                raise NodeError('连接码不对或已过期。请看渲染机「本机设置」里显示的 6 位连接码。', 403)
             self.failures.pop(address, None)
         self.log(f'配对：{client_name}（{address}）')
         return {'token': token, 'name': self.name}
@@ -435,15 +483,36 @@ class NodeServer(ThreadingHTTPServer):
     allow_reuse_address = False
     daemon_threads = True
 
+    def __init__(self, server_address, RequestHandlerClass, max_concurrent=MAX_CONCURRENT_REQUESTS):
+        self.concurrency = threading.Semaphore(max_concurrent)
+        super().__init__(server_address, RequestHandlerClass)
+
     def server_bind(self):
         if os.name == 'nt':
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
+    def process_request(self, request, client_address):
+        if not self.concurrency.acquire(timeout=HANDLER_TIMEOUT_SEC):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.concurrency.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.concurrency.release()
+
 
 def node_handler(node):
     class Handler(BaseHTTPRequestHandler):
         server_version = 'PandaStudioNode/1'
+        timeout = HANDLER_TIMEOUT_SEC
 
         def log_message(self, fmt, *args):
             pass
@@ -526,12 +595,12 @@ def node_handler(node):
                 self.reply({'error': str(error)}, error.status)
             except (json.JSONDecodeError, ValueError, KeyError, TypeError) as error:
                 self.reply({'error': '请求格式无效：' + str(error)}, 400)
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError):
                 pass
             except Exception as error:
                 node.log('服务错误：' + repr(error))
                 try:
-                    self.reply({'error': '渲染机出错：' + str(error)}, 500)
+                    self.reply({'error': '渲染机内部出错，请查看渲染机日志。'}, 500)
                 except OSError:
                     pass
 

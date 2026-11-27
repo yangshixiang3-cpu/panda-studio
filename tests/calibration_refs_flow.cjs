@@ -6,10 +6,9 @@ const path=require('node:path');
 const {spawn}=require('node:child_process');
 const {once}=require('node:events');
 const {setTimeout:sleep}=require('node:timers/promises');
-const workspace=path.resolve(__dirname,'..','..');
-const {root:synced,env,withPage,modelReady,readyImages,until}=require(path.join(workspace,'codex-tasks','wb-10b-tmp','harness.cjs'));
+const {root:synced,env,withPage,modelReady,readyImages,until}=require(path.join(__dirname,'e2e','harness.cjs'));
 const url='http://127.0.0.1:8796';
-const shots=path.join(workspace,'codex-tasks','wb-16-shots');
+const shots=path.join(__dirname,'tmp','calibration-refs-shots');
 const firstRound=process.argv.includes('--screens')?1:0;
 const python=String.raw`
 import shutil, sys, threading

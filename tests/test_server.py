@@ -151,12 +151,13 @@ class StudioTests(unittest.TestCase):
         value=copy.deepcopy(self.task['items'][0]['camera']);value['azimuth_deg']=-100
         self.assertAlmostEqual(validate_camera(value)['azimuth_deg'],35)
 
-    def test_reorder_renumbers_and_invalidates_results(self):
+    def test_reorder_renumbers_and_preserves_results(self):
         self.add_views()
         self.completed();task=self.studio.merge(self.task['id'])['task'];task['items'].reverse()
         updated=self.studio.update(task['id'],{'items':task['items']})
         self.assertEqual([i['no'] for i in updated['items']],[1,2,3,4]);self.assertEqual(updated['items'][0]['label'],'俯视')
-        self.assertTrue(all(i['final']['state']=='none' for i in updated['items']))
+        self.assertTrue(all(i['final']['state']=='done' for i in updated['items']))
+        self.assertEqual([i['final']['file'] for i in updated['items']],[f'final/{n}.jpg' for n in range(1,5)])
 
     def test_initial_draft_does_not_overwrite_user_adjustments(self):
         task=copy.deepcopy(self.task);task['items'][0]['label']='我的主图';self.studio.update(task['id'],{'items':task['items']})

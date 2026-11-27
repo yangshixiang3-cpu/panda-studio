@@ -194,11 +194,29 @@ def read_status(path):
     return status
 
 
+def is_job_json_file(path) -> bool:
+    """只接受队列顶层合法作业 JSON；跳过子目录、状态文件、索引文件及下划线/点开头文件。"""
+    path = Path(path)
+    if not path.is_file():
+        return False
+    name = path.name
+    if name.startswith(("_", ".")):
+        return False
+    lower = name.casefold()
+    if not lower.endswith(".json"):
+        return False
+    if lower == "index.json" or lower.endswith((".status.json", ".index.json")):
+        return False
+    return True
+
+
 def pending_jobs(jobs_dir, on_error: Optional[Callable] = None):
     """按绝对时间、文件名稳定排序；损坏文件交给回调，绝不当作新任务重跑。"""
     pending = []
-    for path in sorted(Path(jobs_dir).glob("*.json")):
-        if path.name.endswith(".status.json"):
+    jobs_root = Path(jobs_dir)
+    candidates = sorted(jobs_root.iterdir()) if jobs_root.is_dir() else []
+    for path in candidates:
+        if not is_job_json_file(path):
             continue
         try:
             status = read_status(path.with_name(path.stem + ".status.json"))
@@ -227,9 +245,142 @@ def next_job(jobs_dir, on_error=None):
 
 
 def lock_script_path(preferred, bundled):
-    """Max 锁脚本：优先用建模技能里的那份（和建模会话共用同一把锁），这台电脑没有时用随程序带的副本。"""
+    """Max 锁脚本：返回第一个存在的文件（优先随程序自带的副本，避免外部旧副本漂移）。"""
     preferred, bundled = Path(preferred), Path(bundled)
     return preferred if preferred.is_file() else bundled
+
+
+LOCK_FILE_NAME = "pf_max_lock.lock"
+LOCK_RENEW_INTERVAL_SEC = 180
+
+
+def _lock_stamp(now_epoch=None):
+    return datetime.fromtimestamp(time.time() if now_epoch is None else now_epoch).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_lock_file(text):
+    """解析 pf_max_lock.ms 同格式的锁文件；字段缺失或格式无效返回 None。"""
+    if not isinstance(text, str):
+        return None
+    fields = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        fields[key.strip()] = value
+    owner = fields.get("owner", "")
+    if not owner or "epoch" not in fields:
+        return None
+    try:
+        epoch_val = int(fields["epoch"].strip())
+    except ValueError:
+        return None
+    return {
+        "owner": owner,
+        "task": fields.get("task", ""),
+        "started": fields.get("started", ""),
+        "epoch": epoch_val,
+        "stamp": fields.get("stamp", ""),
+    }
+
+
+def format_lock_file(record):
+    """按 pf_max_lock.ms 约定的 key=value 行格式序列化锁记录。"""
+    clean = lambda value: str(value or "").replace("\r", " ").replace("\n", " ")
+    return (
+        f"owner={clean(record['owner'])}\n"
+        f"task={clean(record.get('task', ''))}\n"
+        f"started={clean(record.get('started', ''))}\n"
+        f"epoch={int(record['epoch'])}\n"
+        f"stamp={clean(record.get('stamp', ''))}\n"
+    )
+
+
+def read_lock_file(path):
+    try:
+        return parse_lock_file(Path(path).read_text(encoding="utf-8-sig"))
+    except OSError:
+        return None
+
+
+def write_lock_file(path, owner, task="", *, started=None, now_epoch=None, stamp=None):
+    epoch_val = int(time.time() if now_epoch is None else now_epoch)
+    stamp_val = _lock_stamp(epoch_val) if stamp is None else str(stamp)
+    record = {
+        "owner": str(owner),
+        "task": str(task or ""),
+        "started": stamp_val if started is None else str(started),
+        "epoch": epoch_val,
+        "stamp": stamp_val,
+    }
+    atomic_write_text(path, format_lock_file(record))
+    return record
+
+
+def renew_lock_file(path, owner, *, now_epoch=None, stamp=None):
+    """仅当锁文件仍归 owner 所有时原子刷新时间戳；他人占用或文件不存在时绝不覆盖。"""
+    record = read_lock_file(path)
+    if record is None or record["owner"] != owner:
+        return False
+    epoch_val = int(time.time() if now_epoch is None else now_epoch)
+    record["epoch"] = epoch_val
+    record["stamp"] = _lock_stamp(epoch_val) if stamp is None else str(stamp)
+    atomic_write_text(path, format_lock_file(record))
+    return True
+
+
+def release_lock_file(path, owner):
+    """仅当锁文件仍归 owner 所有时删除（兜底清理）。"""
+    record = read_lock_file(path)
+    if record is None or record["owner"] != owner:
+        return False
+    try:
+        Path(path).unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+class LockRenewer:
+    """长渲染期间在后台守护线程定期续期 Max 锁文件（顺带刷新心跳），退出上下文后立即停止。"""
+
+    def __init__(self, lock_path, owner, *, interval=LOCK_RENEW_INTERVAL_SEC, heartbeat=None, on_error=None):
+        self.lock_path = Path(lock_path)
+        self.owner = str(owner)
+        self.interval = float(interval)
+        self.heartbeat = heartbeat
+        self.on_error = on_error
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            try:
+                renew_lock_file(self.lock_path, self.owner)
+                if self.heartbeat is not None:
+                    self.heartbeat.beat()
+            except Exception as error:
+                if self.on_error is not None:
+                    self.on_error(f"续期 Max 锁失败：{error}")
+
+    def start(self):
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, daemon=True, name="白底锁续期")
+            self._thread.start()
+        return self
+
+    def stop(self, timeout=2.0):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *_):
+        self.stop()
+        return False
 
 
 ASSET_DIR_LIMIT = 200
@@ -634,7 +785,13 @@ COLOR_CORRECT_PROPERTIES = {
 # 色彩校正贴图的类：中文版没有英文全局名，要在 textureMap.classes 里按这些名字找
 COLOR_CORRECT_CLASS_NAMES = ("CoronaColorCorrect", "Corona色彩校正")
 LIGHT_INTENSITY_PROPERTIES = ("intensity", "multiplier", "intensityMultiplier")
-REFLECT_MAP_PROPERTIES = ("bg_texmapReflect", "bg_texmapReflection", "reflectOverrideTexmap")
+REFLECT_MAP_PROPERTIES = ("bg_texmapReflect", "BG_TEXMAPREFLECT", "bg_texmapReflection", "reflectOverrideTexmap")
+REFLECT_OVERRIDE_PROPERTIES = ("bg_overrideReflect", "BG_OVERRIDEREFLECT", "reflectOverrideOn")
+DIRECT_OVERRIDE_PROPERTIES = ("bg_overrideDirect", "BG_OVERRIDEDIRECT", "directOverrideOn")
+DIRECT_COLOR_PROPERTIES = ("bg_colorDirect", "BG_COLORDIRECT", "direct_color", "directOverrideColor")
+DIRECT_MAP_PROPERTIES = ("bg_texmapDirect", "BG_TEXMAPDIRECT", "directOverrideTexmap")
+DIRECT_USE_MAP_PROPERTIES = ("bg_texmapUseDirect", "BG_TEXMAPUSEDIRECT", "bg_useTexmapDirect", "BG_USETEXMAPDIRECT")
+ENV_SOURCE_COLOR_PROPERTIES = ("BG_COLOR", "bg_color")
 
 
 def clamp_number(value, minimum, maximum):
@@ -855,7 +1012,7 @@ def clamp_overrides(overrides):
             result["lights"]["per_light"][str(name)] = {"intensity_mul": clamp_number(values["intensity_mul"], 0.5, 2)}
     environment = _object(source.get("environment", {}))
     if "reflection_strength_mul" in environment:
-        result["environment"]["reflection_strength_mul"] = clamp_number(environment["reflection_strength_mul"], 0.5, 2)
+        result["environment"]["reflection_strength_mul"] = clamp_number(environment["reflection_strength_mul"], 0.0, 2.0)
     for no, values in _object(source.get("items", {})).items():
         item_lights = _object(_object(values).get("lights", {}))
         if "rotate_deg" in item_lights:
@@ -1038,3 +1195,7 @@ def calibration_directory(task_dir, round_no=0):
     if isinstance(round_no, bool) or not isinstance(round_no, int) or round_no < 0:
         raise ValueError("calibration_round 必须为非负整数")
     return Path(task_dir) / "calibration" / "round-{}".format(round_no)
+
+
+def preview_manifest_path(exchange_dir, task_id):
+    return Path(exchange_dir) / "tasks" / str(task_id) / "preview" / "scene_manifest.json"

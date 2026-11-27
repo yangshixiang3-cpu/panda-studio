@@ -8,7 +8,7 @@ import sys
 import time
 import traceback
 import types
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import pymxs
@@ -24,8 +24,8 @@ import wb_core as core
 
 # 优先用建模技能里的锁脚本（和建模会话共用一把锁）；别的电脑（如内网渲染机）没有就用随程序带的副本。
 LOCK_SCRIPT = str(core.lock_script_path(
-    Path.home() / ".codex" / "skills" / "panel-furniture-modeling" / "scripts" / "pf_max_lock.ms",
-    _HERE / "pf_max_lock.ms"))
+    _HERE / "pf_max_lock.ms",
+    Path.home() / ".codex" / "skills" / "panel-furniture-modeling" / "scripts" / "pf_max_lock.ms"))
 _SESSION_KEY = "_whitebg_studio_runner_session_v01"
 RUNNER_VERSION = "0.2"
 if _SESSION_KEY not in sys.modules:
@@ -111,15 +111,18 @@ class Runner:
                 raise ValueError("task_id 必须是单层目录名")
             self.owner = "{}:{}".format(self.config["max_lock_owner_prefix"], self.job["job_id"])
             task_dir = self.exchange / "tasks" / task_id
+            lock_file = self.exchange / core.LOCK_FILE_NAME
             lock_attempted = True
             answer = str(rt.execute(
-                '(fileIn @"{}"; ::PFMaxLock.acquire {} {})'.format(
-                    LOCK_SCRIPT, _ms_string(self.owner), _ms_string(task_dir))))
+                '(global PF_MAX_LOCK_FILE = {}; fileIn @"{}"; ::PFMaxLock.acquire {} {})'.format(
+                    _ms_string(lock_file), LOCK_SCRIPT, _ms_string(self.owner), _ms_string(task_dir))))
             if not answer.startswith("OK"):
                 self.status.update(state="waiting_lock", message=answer)
                 self.log("等待 Max 锁：" + answer)
                 return self.status
             acquired = True
+            if core.read_lock_file(lock_file) is None:
+                core.write_lock_file(lock_file, self.owner, str(task_dir))
             if len(list(rt.objects)) > 0 and rt.getSaveRequired():
                 self.status.update(state="waiting_lock", message="当前 Max 场景有未保存的修改")
                 self.log(self.status["message"])
@@ -167,6 +170,8 @@ class Runner:
                         self.log("已释放 Max 锁：" + answer)
                 except Exception:
                     self.fail("释放 Max 锁失败：" + traceback.format_exc())
+                finally:
+                    core.release_lock_file(self.exchange / core.LOCK_FILE_NAME, self.owner)
             if quiet_previous is not None:
                 try:
                     rt.SetQuietMode(quiet_previous)
@@ -217,6 +222,17 @@ class Runner:
         answer = str(rt.execute("::PFMaxLock.touch {}".format(_ms_string(self.owner))))
         if not answer.startswith("OK"):
             raise RuntimeError("Max 锁所有权丢失：" + answer)
+
+    def _lock_renewer(self):
+        owner = getattr(self, "owner", None)
+        if not owner:
+            return nullcontext()
+        return core.LockRenewer(
+            self.exchange / core.LOCK_FILE_NAME,
+            owner,
+            heartbeat=getattr(self, "heartbeat", None),
+            on_error=getattr(self, "log_file", self.log),
+        )
 
     @staticmethod
     def _source(path):
@@ -343,6 +359,8 @@ class Runner:
             if not Path(out_fbx).is_file() or Path(out_fbx).stat().st_size == 0:
                 raise RuntimeError("FBX 导出器未生成文件")
             core.atomic_write_json(out_bbox, document)
+            self._write_preview_manifest(nodes, (), core.bbox_center(*bounds), self._mm_per_unit(),
+                                         fallback_dir=Path(out_bbox).parent)
             self.log("预览已导出，网格数：{}".format(len(nodes)))
         finally:
             for key, old in reversed(previous):
@@ -482,17 +500,32 @@ class Runner:
             self._calibration_unsupported.append(message)
             self.log(message)
 
+    def _unwrap_leaf_material(self, material, seen=None):
+        if material is None:
+            return None, []
+        seen = set() if seen is None else seen
+        name = str(getattr(material, "name", ""))
+        names = [name] if name else []
+        family = self._material_family(material)
+        if family not in ("ray_switch", "multi"):
+            return material, names
+        handle = self._handle(material)
+        if handle in seen:
+            return None, names
+        seen.add(handle)
+        children = (self._ray_children(material) if family == "ray_switch"
+                    else [m for m in (rt.getProperty(material, "materialList") or ()) if m is not None])
+        for child in children:
+            leaf, child_names = self._unwrap_leaf_material(child, seen)
+            if leaf is not None:
+                return leaf, names + [n for n in child_names if n not in names]
+        return None, names
+
     def _material_data(self, material):
         name, class_name = str(material.name), str(rt.classOf(material))
-        target, seen = material, set()
-        while target is not None and self._material_family(target) == "ray_switch":
-            handle = self._handle(target)
-            if handle in seen:
-                target = None
-                break
-            seen.add(handle)
-            children = self._ray_children(target)
-            target = children[0] if children else None
+        target, names_chain = self._unwrap_leaf_material(material)
+        if not names_chain:
+            names_chain = [name]
         available = lambda prop: target is not None and bool(rt.hasProperty(target, prop))
         color_prop = core.material_property(available, "color")
         map_prop = core.material_property(available, "map")
@@ -508,7 +541,7 @@ class Runner:
                 current = float(current)
             params[prop] = current
         bitmap = self._bitmap_name(texmap)
-        kind = core.material_kind(name + (" " + str(target.name) if target is not None else ""),
+        kind = core.material_kind(" ".join(names_chain),
                                   str(rt.classOf(target)) if target is not None else class_name,
                                   bool(bitmap), texmap is None and rgb is not None)
         return {"name": name, "class": class_name, "color": rgb, "map": texmap,
@@ -521,6 +554,21 @@ class Runner:
 
     def _ray_children(self, material):
         return core.ray_switch_children(material, rt.getPropNames(material), rt.getProperty, self._handle)
+
+    def _ray_has_multi(self, material, seen=None):
+        if material is None:
+            return False
+        seen = set() if seen is None else seen
+        handle = self._handle(material)
+        if handle in seen:
+            return False
+        seen.add(handle)
+        family = self._material_family(material)
+        if family == "multi":
+            return True
+        if family == "ray_switch":
+            return any(self._ray_has_multi(child, seen) for child in self._ray_children(material))
+        return False
 
     def _multi_main(self, node, material):
         try:
@@ -555,11 +603,12 @@ class Runner:
                 return result
         return None
 
-    def _product_materials(self, meshes):
+    def _product_materials(self, meshes, *, include_mains=True):
         """递归收集且按 handle 去重；同一物体引用多次的子材质只计一次。"""
-        materials, mains = {}, []
+        materials, mains, containers = {}, [], {}
         for node in meshes:
             visited = set()
+
             def visit(material):
                 if material is None:
                     return
@@ -567,26 +616,54 @@ class Runner:
                 if handle in visited:
                     return
                 visited.add(handle)
-                if self._material_family(material) == "multi":
-                    for child in rt.getProperty(material, "materialList"):
+                family = self._material_family(material)
+                if family == "multi":
+                    cname = str(getattr(material, "name", ""))
+                    if cname:
+                        containers.setdefault(cname, {})[handle] = material
+                    for child in (rt.getProperty(material, "materialList") or ()):
                         visit(child)
+                    return
+                if family == "ray_switch" and self._ray_has_multi(material):
+                    cname = str(getattr(material, "name", ""))
+                    if cname:
+                        containers.setdefault(cname, {})[handle] = material
+                    for child in self._ray_children(material):
+                        if self._ray_has_multi(child):
+                            visit(child)
                     return
                 if handle not in materials:
                     materials[handle] = {"material": material, "objects": 0}
                 materials[handle]["objects"] += 1
-            material = node.material
+
+            material = getattr(node, "material", None)
             visit(material)
-            # 光线切换保留外层名称；只有多维材质按面数选槽。
+            if not include_mains:
+                continue
+            # 光线切换仅在包裹多维材质时继续向下拆到对应面槽；否则保留外层名称。
             seen = set()
-            while material is not None and self._material_family(material) == "multi":
-                handle = self._handle(material)
-                if handle in seen:
-                    self._unsupported("{}：子材质循环引用，分区按未分配材质处理".format(node.name))
-                    material = None
+            while material is not None:
+                family = self._material_family(material)
+                if family == "multi":
+                    handle = self._handle(material)
+                    if handle in seen:
+                        self._unsupported("{}：子材质循环引用，分区按未分配材质处理".format(node.name))
+                        material = None
+                        break
+                    seen.add(handle)
+                    material = self._multi_main(node, material)
+                elif family == "ray_switch" and self._ray_has_multi(material):
+                    handle = self._handle(material)
+                    if handle in seen:
+                        self._unsupported("{}：子材质循环引用，分区按未分配材质处理".format(node.name))
+                        material = None
+                        break
+                    seen.add(handle)
+                    material = next((c for c in self._ray_children(material) if self._ray_has_multi(c)), None)
+                else:
                     break
-                seen.add(handle)
-                material = self._multi_main(node, material)
             mains.append((node, material))
+        self._container_materials = {name: list(by_handle.values()) for name, by_handle in containers.items()}
         return materials, mains
 
     def _color_correct_class(self):
@@ -643,20 +720,34 @@ class Runner:
         return correction
 
     def _apply_material(self, material, values, name=None, kind=None, visited=None):
+        if material is None:
+            return
         visited = set() if visited is None else visited
         handle = self._handle(material)
         if handle in visited:
             return
         visited.add(handle)
+        family = self._material_family(material)
         data = self._material_data(material)
         name = data["name"] if name is None else name
         kind = data["kind"] if kind is None else kind
-        if self._material_family(material) == "ray_switch":
+        if family == "ray_switch":
+            wraps_multi = self._ray_has_multi(material)
             for child in self._ray_children(material):
                 try:
-                    self._apply_material(child, values, name, kind, visited)
+                    self._apply_material(
+                        child, values, None if wraps_multi else name, None if wraps_multi else kind, visited)
                 except Exception as exc:
                     self._unsupported("{}：子材质 {} 调整失败：{}".format(name, child.name, exc))
+            return
+        if family == "multi":
+            for child in (rt.getProperty(material, "materialList") or ()):
+                if child is None:
+                    continue
+                try:
+                    self._apply_material(child, values, None, None, visited)
+                except Exception as exc:
+                    self._unsupported("{}：子材质 {} 调整失败：{}".format(name, getattr(child, "name", ""), exc))
             return
         color_values = {key: value for key, value in values.items()
                         if key in ("hue_shift_deg", "saturation_mul", "brightness_mul", "contrast_mul")
@@ -944,6 +1035,105 @@ class Runner:
             raise ValueError("纯色贴图没有保留场景背景色")
         return bindings["direct_map"], color_map
 
+    @staticmethod
+    def _is_rgb_color(value, target_rgb=(255, 255, 255)):
+        if value is None:
+            return False
+        try:
+            if all(hasattr(value, channel) for channel in ("r", "g", "b")):
+                channels = [float(getattr(value, channel)) for channel in ("r", "g", "b")]
+                return all(math.isclose(a, b, abs_tol=1e-4) for a, b in zip(channels, target_rgb))
+            if isinstance(value, (tuple, list)) and len(value) == 3:
+                return all(math.isclose(float(a), b, abs_tol=1e-4) for a, b in zip(value, target_rgb))
+        except Exception:
+            return False
+        return False
+
+    def _is_pure_white_texmap(self, texmap):
+        if texmap is None:
+            return True
+        try:
+            if self._bitmap_name(texmap):
+                return False
+            count = int(rt.getNumSubTexmaps(texmap)) if hasattr(rt, "getNumSubTexmaps") else 0
+            if count > 0 and any(rt.getSubTexmap(texmap, idx) is not None for idx in range(1, count + 1)):
+                return False
+            color_prop = self._property(texmap, ("color", "solidColor", "colorSolid"))
+            if color_prop is None or not self._is_rgb_color(rt.getProperty(texmap, color_prop), (255, 255, 255)):
+                return False
+            mul_prop = self._property(texmap, ("multiplier", "intensity"))
+            return mul_prop is None or math.isclose(float(rt.getProperty(texmap, mul_prop)), 1.0, abs_tol=1e-4)
+        except Exception:
+            return False
+
+    def _ensure_pure_white_direct(self, snapshots, *, enabled_prop=None, color_prop=None, map_prop=None, strict=False):
+        """确保 Corona 直接可见背景覆盖为纯白 RGB(255,255,255)，且不被非纯白直接背景贴图污染。"""
+        renderer = rt.renderers.current
+        if "corona" not in str(rt.classOf(renderer)).casefold():
+            if strict:
+                raise ValueError("当前渲染器不是 Corona")
+            return False
+        enabled = enabled_prop or self._property(renderer, core.DIRECT_OVERRIDE_PROPERTIES)
+        color_name = color_prop or self._property(renderer, core.DIRECT_COLOR_PROPERTIES)
+        if not enabled or not color_name or not rt.hasProperty(renderer, enabled) or not rt.hasProperty(renderer, color_name):
+            if strict:
+                raise ValueError("缺少 Corona 直接可见背景覆盖属性")
+            return False
+        direct_on = rt.getProperty(renderer, enabled)
+        if type(direct_on) is not bool:
+            if strict:
+                raise ValueError("直接可见背景开关的属性值类型不符")
+            return False
+
+        def change(prop, old, new):
+            snapshots.append((renderer, prop, old))
+            rt.setProperty(renderer, prop, new)
+
+        texmap_prop = map_prop or self._property(renderer, core.DIRECT_MAP_PROPERTIES)
+        cleared_map = False
+        if texmap_prop and rt.hasProperty(renderer, texmap_prop):
+            old_map = rt.getProperty(renderer, texmap_prop)
+            if not self._is_pure_white_texmap(old_map):
+                change(texmap_prop, old_map, None)
+                cleared_map = True
+        use_map_prop = self._property(renderer, core.DIRECT_USE_MAP_PROPERTIES)
+        if use_map_prop and rt.hasProperty(renderer, use_map_prop):
+            old_use = rt.getProperty(renderer, use_map_prop)
+            if old_use is True and (cleared_map or (texmap_prop and rt.hasProperty(renderer, texmap_prop)
+                                                    and not self._is_pure_white_texmap(rt.getProperty(renderer, texmap_prop)))):
+                change(use_map_prop, old_use, False)
+        old_color = rt.getProperty(renderer, color_name)
+        pure_white = rt.Color(255, 255, 255)
+        if not self._is_rgb_color(old_color, (255, 255, 255)):
+            change(color_name, old_color, pure_white)
+        if not direct_on:
+            change(enabled, direct_on, True)
+        after_on = rt.getProperty(renderer, enabled)
+        after_color = rt.getProperty(renderer, color_name)
+        if after_on is not True or (not self._is_rgb_color(after_color, (255, 255, 255))
+                                    and after_color != pure_white and str(after_color) != str(pure_white)):
+            raise ValueError("直接可见背景覆盖未能设为纯白 RGB(255,255,255)")
+        if cleared_map:
+            self.log("已启用 Corona 纯白直接可见背景（RGB 255,255,255），并临时清除非纯白 {}".format(texmap_prop))
+        return True
+
+    @contextmanager
+    def _pure_white_background(self):
+        snapshots = []
+        try:
+            try:
+                self._ensure_pure_white_direct(snapshots)
+            except Exception as exc:
+                errors = self._restore_environment_gi(snapshots)
+                if errors:
+                    raise SceneRestoreError("；".join(errors)) from exc
+                self.log("纯白背景覆盖准备跳过：{}".format(exc))
+            yield
+        finally:
+            errors = self._restore_environment_gi(snapshots)
+            if errors:
+                raise SceneRestoreError("恢复纯白背景失败：" + "；".join(errors))
+
     def _apply_environment_gi(self, bindings, ratio, snapshots):
         if ratio == 1:
             return 1.0
@@ -951,6 +1141,12 @@ class Runner:
             renderer = rt.renderers.current
             if "corona" not in str(rt.classOf(renderer)).casefold():
                 raise ValueError("当前渲染器不是 Corona")
+            if not bindings:
+                auto_enabled = self._property(renderer, core.DIRECT_OVERRIDE_PROPERTIES)
+                auto_color = self._property(renderer, core.DIRECT_COLOR_PROPERTIES)
+                auto_source = self._property(renderer, core.ENV_SOURCE_COLOR_PROPERTIES)
+                if auto_enabled and auto_color and auto_source:
+                    bindings = {"direct_enabled": auto_enabled, "direct_color": auto_color, "source_color": auto_source}
             gi, enabled = (bindings.get(key) for key in ("gi_multiplier", "direct_enabled"))
             props = [bindings.get(key) for key in (
                 "gi_multiplier", "direct_enabled", "direct_map", "direct_color", "source_map", "source_color")]
@@ -972,21 +1168,35 @@ class Runner:
             direct_on = read(enabled)
             if (gi and not core.lighting_number(original_gi)) or type(direct_on) is not bool:
                 raise ValueError("GI 倍率或直接可见背景开关的属性值类型不符")
+            if not gi:
+                # 2026-11-21 中文 Max 2025 + Corona 12 实测：Corona 没有环境 GI 倍率属性；
+                # 调暗 BG_COLOR 能压低白色环境对产品的均匀照明（方盒背光面最暗处 60→35），
+                # 直接可见背景强制锁定为纯白 RGB(255,255,255) 并排除非纯白贴图污染。
+                direct_color_prop = bindings.get("direct_color")
+                if direct_color_prop:
+                    read(direct_color_prop)
+                    self._ensure_pure_white_direct(
+                        snapshots, enabled_prop=enabled, color_prop=direct_color_prop,
+                        map_prop=bindings.get("direct_map"), strict=True)
+                else:
+                    pure_white = rt.Color(255, 255, 255)
+                    prop, source = self._direct_background_source(bindings, lambda p: pure_white if p == source_color_prop else read(p))
+                    change(prop, read(prop), source)
+                    if not direct_on:
+                        change(enabled, direct_on, True)
+                    if read(enabled) is not True or (read(prop) != source and str(read(prop)) != str(source)):
+                        raise ValueError("直接可见背景覆盖未保留纯白背景值")
+                original_color = read(source_color_prop)
+                scaled = rt.Color(original_color.r * ratio, original_color.g * ratio, original_color.b * ratio)
+                change(source_color_prop, original_color, scaled)
+                self.log("Corona 场景环境色 {} 乘以 {:g}，直接可见背景已锁定纯白".format(source_color_prop, ratio))
+                return ratio
             if not direct_on:
                 prop, source = self._direct_background_source(bindings, read)
                 change(prop, read(prop), source)
                 change(enabled, direct_on, True)
                 if read(enabled) is not True or (read(prop) != source and str(read(prop)) != str(source)):
                     raise ValueError("直接可见背景覆盖未保留场景背景值")
-            if not gi:
-                # 2026-11-21 中文 Max 2025 + Corona 12 实测：Corona 没有环境 GI 倍率属性；
-                # 调暗 BG_COLOR 能压低白色环境对产品的均匀照明（方盒背光面最暗处 60→35），
-                # 改 bg_colorList 不起作用。画面里看到的背景已由上面的直接可见覆盖保持原色。
-                original_color = read(source_color_prop)
-                scaled = rt.Color(original_color.r * ratio, original_color.g * ratio, original_color.b * ratio)
-                change(source_color_prop, original_color, scaled)
-                self.log("Corona 场景环境色 {} 乘以 {:g}，直接可见背景已单独保留".format(source_color_prop, ratio))
-                return ratio
             adjusted = original_gi * ratio
             change(gi, original_gi, adjusted)
             if not math.isclose(read(gi), adjusted, rel_tol=1e-6, abs_tol=1e-9):
@@ -1135,11 +1345,30 @@ class Runner:
         prop = self._property(renderer, core.REFLECT_MAP_PROPERTIES)
         return renderer, prop, rt.getProperty(renderer, prop) if prop else None
 
+    @contextmanager
+    def _calibration_environment_scope(self):
+        self._env_reflect_snapshots = []
+        try:
+            yield
+        finally:
+            snapshots = getattr(self, "_env_reflect_snapshots", None)
+            if snapshots:
+                errors = self._restore_environment_gi(snapshots)
+                if errors:
+                    raise SceneRestoreError("恢复环境反射设置失败：" + "；".join(errors))
+
     def _apply_calibration(self, meshes, lights, center, scale):
+        prev_reflect = getattr(self, "_env_reflect_snapshots", None)
+        if prev_reflect:
+            errors = self._restore_environment_gi(prev_reflect)
+            if errors:
+                raise SceneRestoreError("恢复环境反射设置失败：" + "；".join(errors))
+        else:
+            self._env_reflect_snapshots = []
         self._calibration_unsupported = []
         self._template_lights, self._light_center = lights, center
         self._overrides = core.clamp_overrides(self.job.get("overrides"))
-        materials, mains = self._product_materials(meshes)
+        materials, mains = self._product_materials(meshes, include_mains=bool(self.job.get("want_manifest")))
         adjusted = set()
         for entry in materials.values():
             material = entry["material"]
@@ -1149,17 +1378,50 @@ class Runner:
                     self._apply_material(material, values, visited=adjusted)
                 except Exception as exc:
                     self._unsupported("{}：套用材质调整失败：{}".format(material.name, exc))
-        known = {str(entry["material"].name) for entry in materials.values()}
+        container_map = getattr(self, "_container_materials", {})
+        for cname, container_list in container_map.items():
+            values = self._overrides["materials"].get(cname)
+            if values:
+                for container in container_list:
+                    try:
+                        self._apply_material(container, values, visited=adjusted)
+                    except Exception as exc:
+                        self._unsupported("{}：套用容器材质调整失败：{}".format(cname, exc))
+        known = {str(entry["material"].name) for entry in materials.values()} | set(container_map.keys())
         for name in self._overrides["materials"].keys() - known:
             self._unsupported("{}：产品中没有此材质".format(name))
         # 灯光强度、方向统一在逐项上下文套用并恢复，避免污染其他项的 lighting。
         strength = self._overrides["environment"]["reflection_strength_mul"]
-        if strength != 1:
+        if strength == 0:
+            try:
+                renderer, prop, texmap = self._reflect_map()
+                override_prop = self._property(renderer, core.REFLECT_OVERRIDE_PROPERTIES)
+                if override_prop is not None:
+                    old_override = rt.getProperty(renderer, override_prop)
+                    if bool(old_override):
+                        self._env_reflect_snapshots.append((renderer, override_prop, old_override))
+                        rt.setProperty(renderer, override_prop, False)
+                    self.log("环境反射强度设为 0，已临时关闭 Corona {}".format(override_prop))
+                elif prop is not None and texmap is not None:
+                    self._env_reflect_snapshots.append((renderer, prop, texmap))
+                    rt.setProperty(renderer, prop, None)
+                    self.log("环境反射强度设为 0，已临时清空反射贴图 {}".format(prop))
+                else:
+                    self._unsupported("环境：没有可关闭的 反射覆盖开关或贴图")
+            except Exception as exc:
+                self._unsupported("环境反射调整失败：{}".format(exc))
+        elif strength != 1:
             try:
                 renderer, prop, texmap = self._reflect_map()
                 if prop is None or texmap is None:
                     self._unsupported("环境：没有可调的 反射覆盖贴图")
                 else:
+                    override_prop = self._property(renderer, core.REFLECT_OVERRIDE_PROPERTIES)
+                    if override_prop is not None and not bool(rt.getProperty(renderer, override_prop)):
+                        old_override = rt.getProperty(renderer, override_prop)
+                        self._env_reflect_snapshots.append((renderer, override_prop, old_override))
+                        rt.setProperty(renderer, override_prop, True)
+                    self._env_reflect_snapshots.append((renderer, prop, texmap))
                     rt.setProperty(renderer, prop, self._correct_map(texmap, {"brightness_mul": strength}, "环境反射"))
             except Exception as exc:
                 self._unsupported("环境反射调整失败：{}".format(exc))
@@ -1169,23 +1431,30 @@ class Runner:
     def _calibration_dir(self):
         return core.calibration_directory(self.exchange / "tasks" / self.job["task_id"], self.job.get("calibration_round", 0))
 
-    def _write_calibration(self, materials, mains, lights, center, scale):
-        directory = self._calibration_dir()
+    def _build_manifest(self, materials, lights, center, scale, *, record_unsupported=True):
+        unsupported = self._calibration_unsupported if record_unsupported else []
+
+        def note(message):
+            if record_unsupported:
+                self._unsupported(message)
+            elif message not in unsupported:
+                unsupported.append(message)
+
         manifest = {"materials": [], "lights": [], "environment": {"reflect_map": None},
-                    "product_center_mm": [core.units_to_mm(v, scale) for v in center],
-                    "unsupported": self._calibration_unsupported}
+                    "product_center_mm": [core.units_to_mm(v, scale) for v in center] if center is not None else [0.0, 0.0, 0.0],
+                    "unsupported": unsupported}
         for entry in materials.values():
             material = entry["material"]
             try:
                 data = self._material_data(material)
                 if data["family"] is None:
-                    self._unsupported("{}：不支持此材质类 {} 的属性调整".format(data["name"], data["class"]))
+                    note("{}：不支持此材质类 {} 的属性调整".format(data["name"], data["class"]))
                 data["objects"] = entry["objects"]
                 for key in ("map", "map_prop", "color_prop", "family"):
                     del data[key]
                 manifest["materials"].append(data)
             except Exception as exc:
-                self._unsupported("{}：读取材质清单失败：{}".format(material.name, exc))
+                note("{}：读取材质清单失败：{}".format(getattr(material, "name", ""), exc))
         for light in lights:
             try:
                 prop = self._property(light, core.LIGHT_INTENSITY_PROPERTIES)
@@ -1193,14 +1462,37 @@ class Runner:
                     "intensity": float(rt.getProperty(light, prop)) if prop else None,
                     "pos_mm": [core.units_to_mm(v, scale) for v in light.pos]})
                 if prop is None:
-                    self._unsupported("{}：无法读取灯光强度".format(light.name))
+                    note("{}：无法读取灯光强度".format(light.name))
             except Exception as exc:
-                self._unsupported("{}：读取灯光清单失败：{}".format(light.name, exc))
+                note("{}：读取灯光清单失败：{}".format(getattr(light, "name", ""), exc))
         try:
             _, _, texmap = self._reflect_map()
             manifest["environment"]["reflect_map"] = str(texmap.name) if texmap is not None else None
         except Exception as exc:
-            self._unsupported("读取环境反射清单失败：{}".format(exc))
+            note("读取环境反射清单失败：{}".format(exc))
+        return manifest
+
+    def _write_preview_manifest(self, meshes, lights=(), center=None, scale=1.0, *, fallback_dir=None):
+        task_id = self.job.get("task_id") if isinstance(getattr(self, "job", None), dict) else None
+        if task_id:
+            target = core.preview_manifest_path(self.exchange, task_id)
+        elif fallback_dir is not None:
+            target = Path(fallback_dir) / "scene_manifest.json"
+        else:
+            return None
+        try:
+            materials, _ = self._product_materials(meshes, include_mains=False)
+            manifest = self._build_manifest(materials, lights, center, scale, record_unsupported=False)
+            core.atomic_write_json(target, manifest)
+            self.log("已输出预览材质清单：{}".format(target))
+            return manifest
+        except Exception:
+            self.log("输出预览材质清单失败（继续任务）：" + traceback.format_exc())
+            return None
+
+    def _write_calibration(self, materials, mains, lights, center, scale):
+        directory = self._calibration_dir()
+        manifest = self._build_manifest(materials, lights, center, scale, record_unsupported=True)
         identities = dict.fromkeys(self._handle(m) if m is not None else None for _, m in mains)
         colors = dict(zip(identities, core.region_palette(len(identities))))
         legend = {}
@@ -1257,6 +1549,7 @@ class Runner:
     @contextmanager
     def _back_view_visibility(self, item, template_nodes, anchor, scale):
         previous = []
+        env_snapshots = []
         try:
             azimuth = core.camera_azimuth_deg(item["camera"])
             if abs(azimuth) > 100:
@@ -1268,10 +1561,17 @@ class Runner:
                         # isNodeHidden 只改节点自身标记，不清除原有图层隐藏状态。
                         previous.append((node, bool(node.isNodeHidden)))
                         node.isNodeHidden = True
+                try:
+                    self._ensure_pure_white_direct(env_snapshots)
+                except Exception as exc:
+                    restore_errs = self._restore_environment_gi(env_snapshots)
+                    if restore_errs:
+                        raise SceneRestoreError("；".join(restore_errs)) from exc
+                    self.log("背面视角纯白背景覆盖准备跳过：{}".format(exc))
                 self.log("背面视角 {:.3f}°，临时隐藏 {} 个模板几何体".format(azimuth, len(previous)))
             yield
         finally:
-            errors = []
+            errors = self._restore_environment_gi(env_snapshots)
             for node, was_hidden in reversed(previous):
                 try:
                     if not rt.isValidNode(node):
@@ -1461,12 +1761,13 @@ class Runner:
                               for route in mask["routes"] if route["label"] == "遮罩_ID"} if sweep and mask else {}
             self._touch()
             render_started = time.time()
-            if self.job["mode"] == "final" or self.job.get("want_manifest") or sweep:
-                # 一次渲染同时接收位图；自动输出失败后再另存，不进行第二次渲染。
-                beauty, elements = rt.render(camera=camera, frame=0, outputFile=out_image,
-                                             vfb=False, quiet=True, renderElementBitmaps=pymxs.byref(None))
-            else:
-                beauty = rt.render(camera=camera, frame=0, outputFile=out_image, vfb=False, quiet=True)
+            with self._lock_renewer():
+                if self.job["mode"] == "final" or self.job.get("want_manifest") or sweep:
+                    # 一次渲染同时接收位图；自动输出失败后再另存，不进行第二次渲染。
+                    beauty, elements = rt.render(camera=camera, frame=0, outputFile=out_image,
+                                                 vfb=False, quiet=True, renderElementBitmaps=pymxs.byref(None))
+                else:
+                    beauty = rt.render(camera=camera, frame=0, outputFile=out_image, vfb=False, quiet=True)
             if beauty is None:
                 raise RuntimeError("渲染没有返回成图位图，可能被取消")
             self._check_not_blank(beauty, render_started, out_image)
@@ -1539,6 +1840,111 @@ class Runner:
             self.log("删除全黑成图失败：" + traceback.format_exc())
         raise BlankRenderError(core.blank_render_message(corona_error))
 
+    def _scan_render_elements(self, manager):
+        elements = []
+        for index in range(int(manager.NumRenderElements())):
+            element = manager.GetRenderElement(index)
+            enabled = not rt.hasProperty(element, "enabled") or bool(rt.getProperty(element, "enabled"))
+            names = [str(rt.classOf(element))]
+            for prop in ("elementName", "name"):
+                if rt.hasProperty(element, prop):
+                    names.append(str(rt.getProperty(element, prop)))
+            elements.append({"index": index, "enabled": enabled, "names": names, "element": element})
+        return elements
+
+    def _load_render_preset(self, preset):
+        """安全加载 .rps 渲染预设：保护模板的遮罩渲染元素及 Corona 环境反射覆盖不被破坏。"""
+        preset_path = self._source(preset)
+        tpl_elements_active = None
+        tpl_id = None
+        tpl_wire = None
+        tpl_reflect_override = None
+        tpl_reflect_map = None
+        try:
+            manager = rt.maxOps.GetCurRenderElementMgr()
+            if manager is not None:
+                tpl_elements_active = bool(manager.GetElementsActive())
+                before_elems = self._scan_render_elements(manager)
+                selected_before = core.select_mask_elements(before_elems)
+                if selected_before["id_index"] is not None:
+                    entry = before_elems[selected_before["id_index"]]
+                    tpl_id = (entry["element"], entry["enabled"], selected_before["id_exact"])
+                if selected_before["wire_index"] is not None:
+                    entry = before_elems[selected_before["wire_index"]]
+                    tpl_wire = (entry["element"], entry["enabled"])
+        except Exception as exc:
+            self.log("预设加载前快照渲染元素失败（继续加载）：{}".format(exc))
+        try:
+            renderer_before = rt.renderers.current
+            if "corona" in str(rt.classOf(renderer_before)).casefold():
+                override_prop = self._property(renderer_before, core.REFLECT_OVERRIDE_PROPERTIES)
+                map_prop = self._property(renderer_before, core.REFLECT_MAP_PROPERTIES)
+                if override_prop is not None:
+                    tpl_reflect_override = bool(rt.getProperty(renderer_before, override_prop))
+                if map_prop is not None:
+                    tpl_reflect_map = rt.getProperty(renderer_before, map_prop)
+        except Exception as exc:
+            self.log("预设加载前快照环境反射失败（继续加载）：{}".format(exc))
+
+        if rt.renderPresets.LoadAll(0, preset_path) is not True:
+            raise RuntimeError("渲染预设载入失败")
+        self.log("已载入渲染预设：{}".format(preset_path))
+
+        try:
+            manager = rt.maxOps.GetCurRenderElementMgr()
+            if manager is not None:
+                after_elems = self._scan_render_elements(manager)
+                selected_after = core.select_mask_elements(after_elems)
+                if tpl_id is not None:
+                    id_elem, id_was_enabled, id_was_exact = tpl_id
+                    id_missing = selected_after["id_index"] is None or (id_was_exact and not selected_after["id_exact"])
+                    if id_missing:
+                        manager.AddRenderElement(id_elem)
+                        if id_was_enabled and rt.hasProperty(id_elem, "enabled") and not bool(rt.getProperty(id_elem, "enabled")):
+                            rt.setProperty(id_elem, "enabled", True)
+                        self.log("渲染预设丢失模板 遮罩_ID，已自动恢复")
+                    elif id_was_enabled:
+                        cur_id = after_elems[selected_after["id_index"]]["element"]
+                        if rt.hasProperty(cur_id, "enabled") and not bool(rt.getProperty(cur_id, "enabled")):
+                            rt.setProperty(cur_id, "enabled", True)
+                            self.log("渲染预设关闭了 遮罩_ID，已自动重新启用")
+                after_elems = self._scan_render_elements(manager)
+                selected_after = core.select_mask_elements(after_elems)
+                if tpl_wire is not None:
+                    wire_elem, wire_was_enabled = tpl_wire
+                    if selected_after["wire_index"] is None:
+                        manager.AddRenderElement(wire_elem)
+                        if wire_was_enabled and rt.hasProperty(wire_elem, "enabled") and not bool(rt.getProperty(wire_elem, "enabled")):
+                            rt.setProperty(wire_elem, "enabled", True)
+                        self.log("渲染预设丢失模板 遮罩_线框颜色，已自动恢复")
+                    elif wire_was_enabled:
+                        cur_wire = after_elems[selected_after["wire_index"]]["element"]
+                        if rt.hasProperty(cur_wire, "enabled") and not bool(rt.getProperty(cur_wire, "enabled")):
+                            rt.setProperty(cur_wire, "enabled", True)
+                            self.log("渲染预设关闭了 遮罩_线框颜色，已自动重新启用")
+                if tpl_elements_active is True and not bool(manager.GetElementsActive()):
+                    manager.SetElementsActive(True)
+                    self.log("渲染预设关闭了渲染元素总开关，已自动恢复开启")
+        except Exception as exc:
+            self.log("恢复模板渲染元素时出错（继续任务）：{}".format(exc))
+
+        try:
+            renderer_after = rt.renderers.current
+            if "corona" in str(rt.classOf(renderer_after)).casefold():
+                after_map_prop = self._property(renderer_after, core.REFLECT_MAP_PROPERTIES)
+                after_override_prop = self._property(renderer_after, core.REFLECT_OVERRIDE_PROPERTIES)
+                if tpl_reflect_map is not None and after_map_prop is not None:
+                    if rt.getProperty(renderer_after, after_map_prop) is None:
+                        rt.setProperty(renderer_after, after_map_prop, tpl_reflect_map)
+                        self.log("渲染预设丢失模板环境反射贴图，已自动恢复：{}".format(
+                            getattr(tpl_reflect_map, "name", after_map_prop)))
+                if tpl_reflect_override is True and after_override_prop is not None:
+                    if not bool(rt.getProperty(renderer_after, after_override_prop)):
+                        rt.setProperty(renderer_after, after_override_prop, True)
+                        self.log("渲染预设关闭了模板环境反射覆盖 {}，已自动恢复".format(after_override_prop))
+        except Exception as exc:
+            self.log("恢复模板环境反射时出错（继续任务）：{}".format(exc))
+
     def render_job(self):
         self._overrides = None
         self._scene_manifest = None
@@ -1584,14 +1990,15 @@ class Runner:
         self.log("产品已贴墙摆放（Max 毫米）：{}".format(anchor))
         self._material_log(meshes)
         preset = self.job.get("render_preset_rps", self.config.get("render_preset_rps"))
-        if preset and rt.renderPresets.LoadAll(0, self._source(preset)) is not True:
-            raise RuntimeError("渲染预设载入失败")
+        if preset:
+            self._load_render_preset(preset)
         if tuning["probe"]:
             self._probe_lighting()
-        if calibration:
-            center = core.bottom_center(*self._bbox(meshes))
-            self._apply_calibration(meshes, template_lights, center, scale)
-        with self._smallshot_time():
+        self._write_preview_manifest(meshes, template_lights, actual_origin, scale)
+        with self._calibration_environment_scope(), self._pure_white_background(), self._smallshot_time():
+            if calibration:
+                center = core.bottom_center(*self._bbox(meshes))
+                self._apply_calibration(meshes, template_lights, center, scale)
             for item, item_status in zip(self.job["items"], self.status["items"]):
                 item_status.update(state="rendering", started_at=core.timestamp(), message="")
                 self.flush()

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {bundleSignature,pollDelay,rowStatus,taskSteps} from '../../web/task-state.js';
+import {bundleSignature,pollDelay,renumberItems,renumberResult,rowStatus,taskSteps} from '../../web/task-state.js';
 import {syncRange} from '../../web/range.js';
 
 const item=(smallshot,final,enabled=true)=>({enabled,smallshot:{state:smallshot},final:{state:final,file:'final/1.jpg',job_id:'r1'}});
@@ -49,4 +49,30 @@ test('滑杆填充对程序与用户更新使用同一比例',()=>{
   assert.equal(props.get('--fill'),'75%');
   input.value='-50';syncRange(input);
   assert.equal(props.get('--fill'),'0%');
+});
+
+test('重排编号保留出图成果与作业原编号，不改校准目录路径',()=>{
+  const list=[
+    {item_id:'b',no:2,label:'正面',
+      smallshot:{state:'done',file:'smallshots/2.jpg',job_id:'s1'},
+      final:{state:'done',file:'final/2.jpg',mask:'final/2_遮罩_ID.jpg',job_id:'f1'}},
+    {item_id:'a',no:1,label:'主图',
+      smallshot:{state:'done',file:'calibration/round-1/smallshots/1.jpg',job_id:'c1'},
+      final:{state:'done',file:'final/1.jpg',mask:'final/1_遮罩_ID.jpg',job_id:'f1'}},
+  ];
+  const first=renumberItems(list);
+  assert.deepEqual(first.map(i=>i.no),[1,2]);
+  assert.equal(first[0].smallshot.state,'done');
+  assert.equal(first[0].smallshot.file,'smallshots/1.jpg');
+  assert.deepEqual(first[0].smallshot.job_item,{job_id:'s1',no:2});
+  assert.equal(first[0].final.file,'final/1.jpg');
+  assert.equal(first[0].final.mask,'final/1_遮罩_ID.jpg');
+  assert.deepEqual(first[0].final.job_item,{job_id:'f1',no:2});
+  assert.equal(first[1].smallshot.file,'calibration/round-1/smallshots/1.jpg');
+  assert.deepEqual(first[1].smallshot.job_item,{job_id:'c1',no:1});
+  assert.equal(first[1].final.file,'final/2.jpg');
+  // 再次重排时 job_item 保持最初的作业编号
+  const second=renumberItems([first[1],first[0]]);
+  assert.deepEqual(second[1].final.job_item,{job_id:'f1',no:2});
+  assert.equal(renumberResult(second[1].final,2,2,'final').file,'final/2.jpg');
 });

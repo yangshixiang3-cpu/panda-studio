@@ -1,4 +1,5 @@
 import {syncRange} from './range.js';
+import {uploadBlob} from './api.js';
 
 export const DEFAULT_LIGHTING={enabled:false,azimuth_deg:null,elevation_deg:35,intensity:1,contrast:.5};
 export const DEFAULT_LIGHTING_TUNING=Object.freeze({
@@ -83,12 +84,17 @@ export function installLightingUI({$,getTask,getItem,getViewer,requestDraw,light
   $('lighting-presets').innerHTML=presets.map(([label],i)=>`<button data-light-preset="${i}">${label}</button>`).join('');
   let queue=Promise.resolve(),drag=null,uploadedKey,previewSettingsKey;
   const settingsKey=task=>JSON.stringify(previewLightingSettings(task));
-  // 任务轮询可能只替换参数快照，光向和相机值没有变动。
-  setInterval(()=>{
-    if(document.hidden||!getTask()||!getViewer())return;
-    const key=settingsKey(getTask());
+  // 任务轮询或切回前台时按需核对灯光调参快照，不再常驻 500ms 空转定时器。
+  function notifyTaskChanged(){
+    if(typeof document!=='undefined'&&document.hidden)return;
+    const task=getTask();
+    if(!task||!getViewer())return;
+    const key=settingsKey(task);
     if(key!==previewSettingsKey){previewSettingsKey=key;requestDraw();}
-  },500);
+  }
+  if(typeof document!=='undefined'){
+    document.addEventListener('visibilitychange',()=>{if(!document.hidden)notifyTaskChanged();});
+  }
   function editable(){const task=getTask(),item=getItem();return item.lighting??(task.lighting??={...DEFAULT_LIGHTING});}
   function edit(apply){
     const task=getTask();if(!task||busy())return;
@@ -169,12 +175,11 @@ export function installLightingUI({$,getTask,getItem,getViewer,requestDraw,light
       if(getTask()?.id!==id||viewer.model!==model)return;
       const canvas=viewer.lightingImage(item,mergedLighting(task,item),settings);
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('光向示意图生成失败。');
-      const response=await fetch(`/api/tasks/${id}/lighting-images?no=${item.no}`,{method:'POST',headers:{'Content-Type':'image/png'},body:blob});
-      if(!response.ok)throw new Error((await response.json()).error||'光向示意图保存失败。');
+      await uploadBlob(`/api/tasks/${id}/lighting-images?no=${item.no}`,blob,{headers:{'Content-Type':'image/png'},fallback:'光向示意图保存失败'});
     }
     uploadedKey=key;
   }
   function images(){queue=queue.catch(()=>{}).then(upload);return queue;}
-  return {sync,images};
+  return {sync,images,notifyTaskChanged};
 }
 

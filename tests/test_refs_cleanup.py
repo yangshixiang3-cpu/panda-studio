@@ -97,7 +97,7 @@ class AnnotationCleanupTests(unittest.TestCase):
         self.assertEqual([p.name for p in images], [Path(annotation_crop(entry['file'], 0)).name, Path(fallback['file']).name])
         with Image.open(images[0]) as selected:
             expected = ', '.join(f'{v:.1f}' for v in srgb_to_lab(selected.getpixel((0, 0))))
-        self.assertEqual(roles[0]['role'], f'{key} 用户标注参考 Lab≈({expected})')
+        self.assertEqual(roles[0]['role'], f'对应场景材质「柜门 摩卡红橡」（参考材质：{key}，用户标注参考，目标 Lab≈({expected})）')
         self.assertIn('已认可', roles[1]['role'])
         self.refs.save_annotation([red, blue, red], file=entry['file'])
         images, roles = select_images(*spec)
@@ -108,7 +108,7 @@ class AnnotationCleanupTests(unittest.TestCase):
             with Image.open(path) as selected:
                 labs.append(srgb_to_lab(selected.getpixel((0, 0))))
         combined = ', '.join(f'{(a+b)/2:.1f}' for a, b in zip(*labs))
-        self.assertEqual(roles[0]['role'], f'{key} 用户标注参考 Lab≈({combined})')
+        self.assertEqual(roles[0]['role'], f'对应场景材质「柜门 摩卡红橡」（参考材质：{key}，用户标注参考，目标 Lab≈({combined})）')
 
     def seed_task(self, *, days=None, state=None, calibration_state=None):
         task = self.studio.create({'product_dir': str(self.product)})

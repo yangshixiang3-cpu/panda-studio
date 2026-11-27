@@ -262,5 +262,32 @@ class DesktopStudioTests(unittest.TestCase):
         self.assertIsNone(bridge.choose_folder())
         self.assertIsNone(bridge.choose_model())
 
+    def test_system_close_lets_page_save_first(self):
+        import threading
+        bridge = desktop.DesktopBridge()
+        window = bridge._window = Mock()
+        window.events.closed = threading.Event()
+        window.destroy.side_effect = window.events.closed.set
+        # 网页收到通知后自己存好再调 window_close
+        window.evaluate_js.side_effect = lambda script: (bridge.window_close(), True)[1]
+        self.assertFalse(bridge._closing())                        # 第一次：先不关
+        self.assertTrue(window.events.closed.wait(2))
+        self.assertIn('__whitebgCloseSoon', window.evaluate_js.call_args.args[0])
+        self.assertEqual(window.destroy.call_count, 1)
+        self.assertTrue(bridge._closing())                         # 网页关窗口时再进来：放行
+        # 网页出错：直接关
+        bridge = desktop.DesktopBridge()
+        window = bridge._window = Mock()
+        window.events.closed = threading.Event()
+        window.destroy.side_effect = window.events.closed.set
+        window.evaluate_js.side_effect = RuntimeError('页面没了')
+        self.assertFalse(bridge._closing())
+        self.assertTrue(window.events.closed.wait(2))
+        # 网页右上角的关闭按钮：直接关，不再拦
+        bridge = desktop.DesktopBridge()
+        bridge._window = Mock()
+        bridge.window_close()
+        self.assertTrue(bridge._closing())
+
 
 if __name__=='__main__':unittest.main()

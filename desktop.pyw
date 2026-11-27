@@ -14,6 +14,12 @@ from server.settings import ensure_max_exe, refresh_max_plugin
 
 ADDRESS = ('127.0.0.1', 8770)
 URL = 'http://127.0.0.1:8770/'
+WEBVIEW_DATA_DIR = 'webview-data'
+
+
+def webview_storage_dir(root=ROOT):
+    """WebView2 用户数据与缓存目录：留在程序目录（D 盘），不写到 C 盘 AppData/Temp。"""
+    return Path(root) / WEBVIEW_DATA_DIR
 
 
 def is_studio_service(url=URL):
@@ -28,7 +34,7 @@ def is_studio_service(url=URL):
 def start_service(studio=None, address=ADDRESS):
     """返回本进程拥有的服务与线程；复用时两者都为 None。"""
     try:
-        server = LocalServer(address, handler_for(studio or Studio(ROOT)))
+        server = LocalServer(address, handler_for(studio or Studio(ROOT, defer_startup=True)))
     except OSError:
         url = f'http://{address[0]}:{address[1]}/'
         # 另一个桌面进程可能刚绑定端口，给其后台线程短暂启动时间。
@@ -52,6 +58,7 @@ def stop_service(server, thread):
 class DesktopBridge:
     def __init__(self):
         self._window = None
+        self._close_ready = False
 
     def _plan(self, paths):
         plan = plan_inputs([{'path': str(p) if p and Path(p).exists() else '',
@@ -93,8 +100,14 @@ class DesktopBridge:
     # ── 无边框窗口（去掉系统标题栏，页面四周大圆角）：最小化 / 最大化 / 关闭 / 从边缘拉伸都由页面上的按钮调用。
     # 圆角靠把窗口本身裁成圆角矩形（SetWindowRgn）：圆角外的部分窗口不存在，直接透出桌面。
     # （pywebview 的 transparent 在 Windows 上不会让窗体变透明，圆角外会露出窗体底色，所以不用它。）
-    _restore_rect = None
+    # 分屏（1.6.2）：pywebview 自带的拖动是网页里一点点挪窗口，不走系统的「移动窗口」，拖到屏幕边上不会分屏；
+    # 无边框窗体也缺系统窗口的样式，Win+方向键、贴边分屏都用不了。所以：
+    #   1. 给窗口补上标题栏、可拉伸、最大化 / 最小化这些样式（_frame），再在 WM_NCCALCSIZE 里把系统边框和标题栏藏掉；
+    #   2. 拖动标题区时交给系统移动窗口（window_start_drag），这样贴边分屏、Win11 拖到顶部的布局、拖动最大化窗口自动还原都有；
+    #   3. 最大化用系统的最大化（ShowWindow），和分屏、Win+↑↓ 是同一套状态。
+    _subclass_proc = None
     CORNER = 22   # 圆角半径（网页像素），和 style.css 里 html.frameless 的描边圆角一致
+    FRAME_STYLES = 0x00C00000 | 0x00040000 | 0x00080000 | 0x00020000 | 0x00010000   # 标题栏、可拉伸、系统菜单、最小化、最大化
 
     def _apply_region(self, *_):
         from ctypes import wintypes
@@ -104,7 +117,7 @@ class DesktopBridge:
         user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
         user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
         gdi32.CreateRoundRectRgn.restype = wintypes.HANDLE
-        if self._restore_rect:          # 最大化：直角铺满，不裁
+        if user32.IsZoomed(hwnd):       # 最大化：直角铺满，不裁
             user32.SetWindowRgn(hwnd, None, True)
             return
         rect = wintypes.RECT()
@@ -117,10 +130,85 @@ class DesktopBridge:
 
     def _shown(self):
         try:
-            self._window.native.SizeChanged += self._apply_region   # 任何方式改了大小（拉伸、贴边）都重新裁
+            self._window.native.SizeChanged += self._on_size   # 任何方式改了大小（拉伸、贴边、分屏）都重新裁
         except Exception:
             pass
+        self._on_ui(self._frame)
         self._apply_region()
+
+    def _on_ui(self, func, wait=True):
+        """在窗口自己的界面线程里执行（改窗口样式、子类化、开始系统拖动都要在这个线程里做）。"""
+        native = getattr(self._window, 'native', None)
+        if native is None:
+            return
+        from System import Action
+        if wait:
+            native.Invoke(Action(func))
+        else:
+            native.BeginInvoke(Action(func))
+
+    def _on_size(self, *_):
+        self._ensure_styles()
+        self._apply_region()
+
+    def _ensure_styles(self):
+        """WinForms 有时会按自己的设置重算窗口样式，把补上的样式冲掉；改大小时检查一下，少了就补回来。"""
+        from ctypes import wintypes
+        hwnd = self._hwnd()
+        if not hwnd or self._subclass_proc is None:
+            return
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+        style = user32.GetWindowLongPtrW(hwnd, -16)        # GWL_STYLE
+        if style & self.FRAME_STYLES == self.FRAME_STYLES:
+            return
+        user32.SetWindowLongPtrW(hwnd, -16, style | self.FRAME_STYLES)
+        # SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE：让系统按新样式重算一次边框（由 WM_NCCALCSIZE 藏掉）
+        user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004 | 0x0010)
+
+    def _frame(self):
+        """补上系统窗口样式，并子类化窗口：WM_NCCALCSIZE 时让整个窗口都是网页（不画系统边框和标题栏）；
+        系统最大化时窗口会比屏幕多出一圈边框，往里收回，内容正好铺满工作区。"""
+        from ctypes import wintypes
+        hwnd = self._hwnd()
+        if not hwnd or self._subclass_proc is not None:
+            return
+        user32, comctl32 = ctypes.windll.user32, ctypes.windll.comctl32
+        lresult = ctypes.c_ssize_t
+        subclass_proc = ctypes.WINFUNCTYPE(lresult, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                                           ctypes.c_size_t, ctypes.c_size_t)
+        comctl32.DefSubclassProc.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        comctl32.DefSubclassProc.restype = lresult
+        comctl32.SetWindowSubclass.argtypes = [wintypes.HWND, subclass_proc, ctypes.c_size_t, ctypes.c_size_t]
+        comctl32.SetWindowSubclass.restype = wintypes.BOOL
+
+        class NCCALCSIZE_PARAMS(ctypes.Structure):
+            _fields_ = [('rgrc', wintypes.RECT * 3), ('lppos', ctypes.c_void_p)]
+
+        def proc(window, message, wparam, lparam, _id, _data):
+            if message == 0x0083 and wparam:            # WM_NCCALCSIZE
+                if user32.IsZoomed(window):
+                    params = ctypes.cast(lparam, ctypes.POINTER(NCCALCSIZE_PARAMS)).contents
+                    dpi = user32.GetDpiForWindow(window) or 96
+                    pad = user32.GetSystemMetricsForDpi(92, dpi)           # SM_CXPADDEDBORDER
+                    fx = user32.GetSystemMetricsForDpi(32, dpi) + pad      # SM_CXFRAME
+                    fy = user32.GetSystemMetricsForDpi(33, dpi) + pad      # SM_CYFRAME
+                    rect = params.rgrc[0]
+                    rect.left += fx
+                    rect.top += fy
+                    rect.right -= fx
+                    rect.bottom -= fy
+                return 0
+            return comctl32.DefSubclassProc(window, message, wparam, lparam)
+
+        self._subclass_proc = subclass_proc(proc)          # 一直留着引用，不然回调会被回收
+        if comctl32.SetWindowSubclass(hwnd, self._subclass_proc, 1, 0):
+            self._ensure_styles()
+        else:
+            self._subclass_proc = None
 
     def _hwnd(self):
         native = getattr(self._window, 'native', None)
@@ -130,46 +218,69 @@ class DesktopBridge:
         self._window.minimize()
 
     def window_close(self):
+        # 网页右上角的关闭按钮：网页已经先把没存的改动存好了，直接关
+        self._close_ready = True
         self._window.destroy()
 
+    def _closing(self):
+        """Alt+F4、任务栏「关闭窗口」：先不关，请网页把还没存的改动（画布、任务页都是停一下才存）存好后自己关；
+        网页 4 秒内没关上（卡住、出错）就直接关。这个事件在界面线程里同步执行，不能在这里等网页，所以放到后台线程。"""
+        if self._close_ready or self._window is None:
+            return True
+        self._close_ready = True
+        window = self._window
+
+        def save_then_close():
+            try:
+                asked = window.evaluate_js('window.__whitebgCloseSoon ? (window.__whitebgCloseSoon(), true) : false')
+            except Exception:
+                asked = False
+            if asked:
+                window.events.closed.wait(4)
+            if not window.events.closed.is_set():
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+        threading.Thread(target=save_then_close, daemon=True).start()
+        return False
+
     def window_maximized(self):
-        return self._restore_rect is not None
+        hwnd = self._hwnd()
+        return bool(hwnd and ctypes.windll.user32.IsZoomed(hwnd))
 
     def window_toggle_maximize(self):
-        """最大化按屏幕工作区摆放（无边框窗口用系统最大化会盖住任务栏）；再点一次回到原来的位置和大小。"""
-        from ctypes import wintypes
+        """系统最大化 / 还原（和贴边分屏、Win+↑↓ 是同一套状态；样式里有标题栏，最大化不会盖住任务栏）。"""
         hwnd = self._hwnd()
         if not hwnd:
             return False
         user32 = ctypes.windll.user32
-        flags = 0x0004 | 0x0040   # SWP_NOZORDER | SWP_SHOWWINDOW
-        if self._restore_rect:
-            left, top, right, bottom = self._restore_rect
-            self._restore_rect = None
-            user32.SetWindowPos(hwnd, 0, left, top, right - left, bottom - top, flags)
-            self._apply_region()
+        user32.ShowWindow(hwnd, 9 if user32.IsZoomed(hwnd) else 3)   # SW_RESTORE / SW_MAXIMIZE
+        self._apply_region()
+        return bool(user32.IsZoomed(hwnd))
+
+    def window_start_drag(self):
+        """按住标题区拖动：交给系统移动窗口（贴边分屏、拖到顶部选布局、拖动最大化窗口自动还原都靠它）。"""
+        from ctypes import wintypes
+        hwnd = self._hwnd()
+        user32 = ctypes.windll.user32
+        if not hwnd or not user32.GetAsyncKeyState(0x01) & 0x8000:     # 左键已经松开了就不拖
             return False
 
-        class MONITORINFO(ctypes.Structure):
-            _fields_ = [('cbSize', wintypes.DWORD), ('rcMonitor', wintypes.RECT),
-                        ('rcWork', wintypes.RECT), ('dwFlags', wintypes.DWORD)]
-        rect = wintypes.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
-        info = MONITORINFO()
-        info.cbSize = ctypes.sizeof(MONITORINFO)
-        monitor = user32.MonitorFromWindow(hwnd, 2)   # MONITOR_DEFAULTTONEAREST
-        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            return False
-        self._restore_rect = (rect.left, rect.top, rect.right, rect.bottom)
-        work = info.rcWork
-        self._apply_region()                        # 先去掉圆角裁剪再铺满
-        user32.SetWindowPos(hwnd, 0, work.left, work.top, work.right - work.left, work.bottom - work.top, flags)
+        def start():
+            point = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(point))
+            user32.ReleaseCapture()
+            # WM_NCLBUTTONDOWN + HTCAPTION：就像按在系统标题栏上，系统接管拖动
+            user32.PostMessageW(hwnd, 0x00A1, 2, ((point.y & 0xFFFF) << 16) | (point.x & 0xFFFF))
+        self._on_ui(start, wait=False)
         return True
 
     def window_resize(self, width, height, edge):
         """从页面边缘拉伸：edge 为 n/s/e/w 的组合，拉哪边就固定对边。宽高是网页像素（逻辑像素）。"""
         from webview.window import FixPoint
-        if self._restore_rect:
+        hwnd = self._hwnd()
+        if hwnd and ctypes.windll.user32.IsZoomed(hwnd):
             return
         edge = str(edge)
         fix = (FixPoint.SOUTH if 'n' in edge else FixPoint.NORTH) | (FixPoint.EAST if 'w' in edge else FixPoint.WEST)
@@ -189,18 +300,35 @@ def main():
         # 内网渲染机后台服务（开机自启登记的就是这个）：不开窗口，不占 8770
         from server.render_node import run_forever
         return run_forever(ROOT)
-    server = thread = None
+    server = thread = bg_init = None
     try:
         import webview
-        try:
-            ensure_max_exe(ROOT)  # 新电脑第一次打开：自动找 3ds Max
-            refresh_max_plugin(ROOT)  # 换过安装位置时，把已装插件里的路径改过来
-        except Exception:
-            pass
-        # 这台电脑设为渲染机了但后台服务没在跑（比如刚升级）：顺手拉起来，不耽误开窗口
         from server.node_setup import ensure_service
-        threading.Thread(target=ensure_service, args=(ROOT,), daemon=True).start()
+        root = ROOT
+        fn_ensure_max = ensure_max_exe
+        fn_refresh_plugin = refresh_max_plugin
+        fn_ensure_service = ensure_service
+        # 先启动本地 HTTP 服务并创建窗口；查找 Max、刷新插件、拉起渲染机服务放到后台线程执行，不耽误秒开窗口
         server, thread = start_service()
+
+        def _background_desktop_init():
+            try:
+                found = fn_ensure_max(root)
+                if found and server is not None:
+                    st = getattr(server.RequestHandlerClass, 'studio_instance', None)
+                    if st is not None and st.runner.executable is None:
+                        st.config['max_exe'] = str(found)
+                        st.runner.executable = Path(found).resolve()
+                fn_refresh_plugin(root)
+            except Exception:
+                pass
+            try:
+                fn_ensure_service(root)
+            except Exception:
+                pass
+
+        bg_init = threading.Thread(target=_background_desktop_init, daemon=True, name='desktop-bg-init')
+        bg_init.start()
         bridge = DesktopBridge()
         # 无边框：去掉系统白色标题栏，页面自己画窗口按钮，窗口本身裁成圆角；拖动只认标了 pywebview-drag-region 的元素本身，
         # 点标题栏里的按钮不会带动窗口。
@@ -213,7 +341,11 @@ def main():
         bridge._window = window
         window.events.loaded += bridge._loaded
         window.events.shown += bridge._shown
-        webview.start(gui='edgechromium')
+        window.events.closing += bridge._closing
+        storage = webview_storage_dir(root)
+        storage.mkdir(parents=True, exist_ok=True)
+        # private_mode=False + storage_path：保留页面 localStorage（上次页面、动效开关），且所有缓存只写到程序目录
+        webview.start(gui='edgechromium', private_mode=False, storage_path=str(storage))
         if not window.events.shown.is_set():
             raise RuntimeError('桌面窗口未能启动，请检查本机 Edge WebView2 运行环境。')
         return 0
@@ -222,6 +354,8 @@ def main():
         return 1
     finally:
         stop_service(server, thread)
+        if bg_init is not None:
+            bg_init.join(timeout=1.0)
 
 
 if __name__ == '__main__':

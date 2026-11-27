@@ -8,76 +8,100 @@ import {materialKind,finishColorOf} from './finishes.js';
 const TOLERANCE=.006;      // 相接容差：场景对角线的 0.6%（约 1–2 厘米）
 const CRUMB=.02;           // 体积不到最大堆 2% 的碎块并到最近的柜子
 const NAME_LIMIT=40;
+const IGNORED_FBX_WARN=/^(?:THREE\.)?FBXLoader:/;
 
-/** 解析 FBX（不加载贴图），返回 [{id,name,nodes,bbox_mm,colors}]，按从左到右排序。 */
-export function detectVariants(buffer){
-  const manager=new LoadingManager();
-  manager.addHandler(/.*/,{path:'',setPath(){return this;},load(url){if(String(url).startsWith('blob:'))URL.revokeObjectURL(url);return new Texture();}});
-  const warn=console.warn;console.warn=()=>{};
-  let asset;try{asset=new FBXLoader(manager).parse(buffer,'');}finally{console.warn=warn;}
-  asset.updateMatrixWorld(true);
-  const unit=(asset.userData.unitScaleFactor>0?asset.userData.unitScaleFactor:1)*10;
-  const meshes=[];
-  asset.traverse(o=>{if(o.isMesh&&o.name)meshes.push({name:o.name,box:new Box3().setFromObject(o),mats:[].concat(o.material).filter(Boolean)});});
-  if(!meshes.length)return [];
-  const all=new Box3();for(const m of meshes)all.union(m.box);
-  const tol=all.getSize(new Vector3()).length()*TOLERANCE;
+/** 仅在 FBXLoader.parse 同步解析期间过滤无关警告，结束后立即恢复原 console.warn。 */
+export function withFilteredFbxWarnings(fn){
+  const original=console.warn;
+  console.warn=(...args)=>{
+    const first=typeof args[0]==='string'?args[0]:'';
+    if(IGNORED_FBX_WARN.test(first))return;
+    return original.apply(console,args);
+  };
+  try{return fn();}finally{console.warn=original;}
+}
 
-  // 并查集：包围盒外扩容差后相交即同一个柜子
-  const parent=meshes.map((_,i)=>i);
-  const find=i=>{while(parent[i]!==i)i=parent[i]=parent[parent[i]];return i;};
-  const grown=meshes.map(m=>m.box.clone().expandByScalar(tol));
-  const order=meshes.map((_,i)=>i).sort((a,b)=>grown[a].min.x-grown[b].min.x);
-  for(let p=0;p<order.length;p++){
-    const i=order[p];
-    for(let q=p+1;q<order.length;q++){
-      const j=order[q];
-      if(grown[j].min.x>grown[i].max.x)break;        // 按 x 排序后提前结束
-      if(grown[i].intersectsBox(grown[j]))parent[find(i)]=find(j);
+/** 识别款式：可传入已解析好的 Three 根节点（免二次解析），或直接传 FBX ArrayBuffer。返回 [{id,name,nodes,bbox_mm,colors}]。 */
+export function detectVariants(source){
+  if(!source)return [];
+  let asset=source,cleanup=null;
+  if(source instanceof ArrayBuffer||ArrayBuffer.isView(source)){
+    const buffer=source instanceof ArrayBuffer?source:source.buffer.slice(source.byteOffset,source.byteOffset+source.byteLength);
+    const manager=new LoadingManager(),urls=[];
+    manager.addHandler(/.*/,{path:'',setPath(){return this;},load(url){if(String(url).startsWith('blob:'))urls.push(url);return new Texture();}});
+    asset=withFilteredFbxWarnings(()=>new FBXLoader(manager).parse(buffer,''));
+    cleanup=()=>{
+      for(const u of urls)URL.revokeObjectURL(u);
+      asset.traverse(o=>{o.geometry?.dispose?.();for(const m of [].concat(o.material||[]))m?.dispose?.();});
+    };
+  }
+  try{
+    asset.updateMatrixWorld(true);
+    const unit=(asset.userData?.unitScaleFactor>0?asset.userData.unitScaleFactor:1)*10;
+    const meshes=[];
+    asset.traverse(o=>{if(o.isMesh&&o.name)meshes.push({name:o.name,box:new Box3().setFromObject(o),mats:[].concat(o.material).filter(Boolean)});});
+    if(!meshes.length)return [];
+    const all=new Box3();for(const m of meshes)all.union(m.box);
+    const tol=all.getSize(new Vector3()).length()*TOLERANCE;
+
+    // 并查集：包围盒外扩容差后相交即同一个柜子
+    const parent=meshes.map((_,i)=>i);
+    const find=i=>{while(parent[i]!==i)i=parent[i]=parent[parent[i]];return i;};
+    const grown=meshes.map(m=>m.box.clone().expandByScalar(tol));
+    const order=meshes.map((_,i)=>i).sort((a,b)=>grown[a].min.x-grown[b].min.x);
+    for(let p=0;p<order.length;p++){
+      const i=order[p];
+      for(let q=p+1;q<order.length;q++){
+        const j=order[q];
+        if(grown[j].min.x>grown[i].max.x)break;        // 按 x 排序后提前结束
+        if(grown[i].intersectsBox(grown[j]))parent[find(i)]=find(j);
+      }
     }
-  }
-  let groups=new Map();
-  meshes.forEach((m,i)=>{const r=find(i);if(!groups.has(r))groups.set(r,[]);groups.get(r).push(m);});
-  groups=[...groups.values()].map(list=>{const box=new Box3();list.forEach(m=>box.union(m.box));return {list,box};});
+    let groups=new Map();
+    meshes.forEach((m,i)=>{const r=find(i);if(!groups.has(r))groups.set(r,[]);groups.get(r).push(m);});
+    groups=[...groups.values()].map(list=>{const box=new Box3();list.forEach(m=>box.union(m.box));return {list,box};});
 
-  // 碎块（散落的小五金等）并到中心最近的大堆
-  const volume=b=>{const s=b.getSize(new Vector3());return Math.max(s.x*s.y*s.z,1e-9);};
-  const biggest=Math.max(...groups.map(g=>volume(g.box)));
-  const major=groups.filter(g=>volume(g.box)>=biggest*CRUMB),minor=groups.filter(g=>volume(g.box)<biggest*CRUMB);
-  for(const g of minor){
-    const c=g.box.getCenter(new Vector3());
-    const near=major.reduce((a,b)=>a.box.distanceToPoint(c)<=b.box.distanceToPoint(c)?a:b);
-    near.list.push(...g.list);near.box.union(g.box);
-  }
-  // 同一产品的吊柜 + 地柜（上下分体，中间有空隙）不能拆成两个柜子：
-  // ① 水平投影（x、z）有重叠的堆合并（吊柜在地柜正上方）；② 离地悬空的堆并到水平距离最近的落地堆。
-  // 并排摆放的几个款式水平投影互不重叠、都落地，仍然分开。
-  const floor=all.min.y,height=Math.max(all.max.y-all.min.y,1e-9);
-  const footprint=(a,b)=>a.min.x<=b.max.x+tol&&b.min.x<=a.max.x+tol&&a.min.z<=b.max.z+tol&&b.min.z<=a.max.z+tol;
-  const absorb=(into,from)=>{into.list.push(...from.list);into.box.union(from.box);major.splice(major.indexOf(from),1);};
-  for(let merged=true;merged;){
-    merged=false;
-    outer:for(const a of major)for(const b of major){
-      if(a!==b&&footprint(a.box,b.box)){absorb(a,b);merged=true;break outer;}
+    // 碎块（散落的小五金等）并到中心最近的大堆
+    const volume=b=>{const s=b.getSize(new Vector3());return Math.max(s.x*s.y*s.z,1e-9);};
+    const biggest=Math.max(...groups.map(g=>volume(g.box)));
+    const major=groups.filter(g=>volume(g.box)>=biggest*CRUMB),minor=groups.filter(g=>volume(g.box)<biggest*CRUMB);
+    for(const g of minor){
+      const c=g.box.getCenter(new Vector3());
+      const near=major.reduce((a,b)=>a.box.distanceToPoint(c)<=b.box.distanceToPoint(c)?a:b);
+      near.list.push(...g.list);near.box.union(g.box);
     }
-  }
-  const grounded=g=>g.box.min.y-floor<=height*.1;
-  if(major.some(grounded))for(const g of major.filter(g=>!grounded(g))){
-    const c=g.box.getCenter(new Vector3()),flat=b=>{const d=b.box.getCenter(new Vector3());return Math.hypot(d.x-c.x,d.z-c.z);};
-    absorb(major.filter(grounded).reduce((a,b)=>flat(a)<=flat(b)?a:b),g);
-  }
-  major.sort((a,b)=>a.box.getCenter(new Vector3()).x-b.box.getCenter(new Vector3()).x);
+    // 同一产品的吊柜 + 地柜（上下分体，中间有空隙）不能拆成两个柜子：
+    // ① 水平投影（x、z）有重叠的堆合并（吊柜在地柜正上方）；② 离地悬空的堆并到水平距离最近的落地堆。
+    // 并排摆放的几个款式水平投影互不重叠、都落地，仍然分开。
+    const floor=all.min.y,height=Math.max(all.max.y-all.min.y,1e-9);
+    const footprint=(a,b)=>a.min.x<=b.max.x+tol&&b.min.x<=a.max.x+tol&&a.min.z<=b.max.z+tol&&b.min.z<=a.max.z+tol;
+    const absorb=(into,from)=>{into.list.push(...from.list);into.box.union(from.box);major.splice(major.indexOf(from),1);};
+    for(let merged=true;merged;){
+      merged=false;
+      outer:for(const a of major)for(const b of major){
+        if(a!==b&&footprint(a.box,b.box)){absorb(a,b);merged=true;break outer;}
+      }
+    }
+    const grounded=g=>g.box.min.y-floor<=height*.1;
+    if(major.some(grounded))for(const g of major.filter(g=>!grounded(g))){
+      const c=g.box.getCenter(new Vector3()),flat=b=>{const d=b.box.getCenter(new Vector3());return Math.hypot(d.x-c.x,d.z-c.z);};
+      absorb(major.filter(grounded).reduce((a,b)=>flat(a)<=flat(b)?a:b),g);
+    }
+    major.sort((a,b)=>a.box.getCenter(new Vector3()).x-b.box.getCenter(new Vector3()).x);
 
-  const names=new Set();
-  return major.map((g,k)=>{
-    const {name,colors}=describe(g.list);
-    let label=name||`柜子 ${k+1}`;
-    if(names.has(label))label=`${label} ${k+1}`;
-    names.add(label);
-    const mm=v=>v.toArray().map(n=>Math.round(n*unit*10)/10);
-    return {id:`v${k+1}`,name:label.slice(0,NAME_LIMIT),nodes:[...new Set(g.list.map(m=>m.name))],
-      bbox_mm:{min:mm(g.box.min),max:mm(g.box.max)},colors};
-  });
+    const names=new Set();
+    return major.map((g,k)=>{
+      const {name,colors}=describe(g.list);
+      let label=name||`柜子 ${k+1}`;
+      if(names.has(label))label=`${label} ${k+1}`;
+      names.add(label);
+      const mm=v=>v.toArray().map(n=>Math.round(n*unit*10)/10);
+      return {id:`v${k+1}`,name:label.slice(0,NAME_LIMIT),nodes:[...new Set(g.list.map(m=>m.name))],
+        bbox_mm:{min:mm(g.box.min),max:mm(g.box.max)},colors};
+    });
+  }finally{
+    cleanup?.();
+  }
 }
 
 // 名字 = 体积占比最大的两种饰面材质；色块 = 这两种饰面的近似色

@@ -7,3 +7,6 @@ import './lighting.test.mjs';
 import './lightbox.test.mjs';
 import './task-state.test.mjs';
 import './render-target.test.mjs';
+import './canvas.test.mjs';
+import './api.test.mjs';
+import './materials_and_perf_180.test.mjs';

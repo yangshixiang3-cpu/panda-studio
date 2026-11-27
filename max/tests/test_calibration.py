@@ -37,7 +37,7 @@ class OverrideTests(unittest.TestCase):
                   "environment": {"reflection_strength_mul": -3}, "items": {"1": {"lights": {"rotate_deg": 120}}}}
         result = core.clamp_overrides(source)
         self.assertEqual(result["lights"], {"intensity_mul": 1.6, "rotate_deg": -90, "per_light": {"灯": {"intensity_mul": 2}}})
-        self.assertEqual(result["environment"]["reflection_strength_mul"], 0.5)
+        self.assertEqual(result["environment"]["reflection_strength_mul"], 0.0)
         self.assertEqual(core.item_light_angle(result, 1), 90)
         self.assertEqual(core.item_light_angle(result, 2), -90)
 

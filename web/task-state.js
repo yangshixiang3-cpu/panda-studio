@@ -57,3 +57,41 @@ export function bundleSignature(data){
   const revision=data.revision??data.task.revision;
   return revision!=null?'revision:'+revision:JSON.stringify(data);
 }
+
+export function renumberResult(result,oldNo,newNo,folder){
+  if(!result)return result;
+  const next={...result};
+  if(oldNo===newNo)return next;
+  for(const [key,suffix] of [['file','.jpg'],['mask','_遮罩_ID.jpg']]){
+    if(String(next[key]||'').replaceAll('\\','/')===`${folder}/${oldNo}${suffix}`){
+      next[key]=`${folder}/${newNo}${suffix}`;
+    }
+  }
+  if(next.job_id&&next.job_item?.job_id!==next.job_id){
+    next.job_item={job_id:next.job_id,no:oldNo};
+  }
+  return next;
+}
+
+export function renumberItems(items){
+  return items.map((item,index)=>{
+    const oldNo=item.no,no=index+1;
+    return {...item,no,
+      smallshot:renumberResult(item.smallshot,oldNo,no,'smallshots'),
+      final:renumberResult(item.final,oldNo,no,'final'),
+    };
+  });
+}
+
+export function shouldPauseBackground(page, hidden=false){
+  return Boolean(hidden||page==='task'||page==='canvas');
+}
+
+export function syncBackgroundPause(doc, page){
+  if(!doc?.body)return false;
+  const hidden=Boolean(doc.hidden);
+  const paused=shouldPauseBackground(page,hidden);
+  if(doc.body.classList.contains('bg-paused')!==paused)doc.body.classList.toggle('bg-paused',paused);
+  if(doc.body.classList.contains('page-hidden')!==hidden)doc.body.classList.toggle('page-hidden',hidden);
+  return paused;
+}

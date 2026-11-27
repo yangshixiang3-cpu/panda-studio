@@ -8,10 +8,9 @@ const {once}=require('node:events');
 const {setTimeout:sleep}=require('node:timers/promises');
 const {chromium}=require(process.env.PLAYWRIGHT_CORE||'playwright-core');
 
-const project=path.resolve(__dirname,'..'),workspace=path.dirname(project);
-const synced=path.join(workspace,'codex-tasks','wb-10b-tmp','studio');
 const tmp=path.join(__dirname,'tmp');
-const shots=path.resolve(process.argv[2]||path.join(workspace,'codex-tasks','wb-12-shots'));
+const synced=path.join(tmp,'e2e','studio');
+const shots=path.resolve(process.argv[2]||path.join(tmp,'refs-cleanup-shots'));
 const url='http://127.0.0.1:8796';
 const python=String.raw`
 import json, shutil, sys, threading

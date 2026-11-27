@@ -32,8 +32,20 @@ export function installSettings({$,api,toast,guard,escape}){
     $('set-remove-plugin').hidden=!plugin?.installed;
     history=[...state.history_roots];renderHistory();
     $('set-data-dir').textContent=state.data_dir;$('set-data-dir').title=state.data_dir;
+    status($('set-template-status'),state.checks.template,'白底模板正常','白底模板文件不见了（软件目录 template 文件夹里的 白底模板.max）：重新安装一次软件就能补回，任务和图片不会丢');
     $('set-motion').checked=document.documentElement.dataset.motion!=='off';
-    $('setup-banner').hidden=state.ready;
+    banner(state);
+  }
+  // 首页提示：按真正缺的东西说（缺 Max / 缺白底模板 / 都缺）；选了内网渲染机就不提示
+  function banner(data){
+    $('setup-banner').hidden=!!data.ready;
+    if(data.ready)return;
+    const max=data.checks?.max_exe,template=data.checks?.template;
+    const remote='本机没装 Max 的话，在右上角「渲染位置」选一台内网渲染机';
+    const [title,text]=!max&&!template?['本机还缺 3ds Max 和白底模板','在设置里指定 3ds Max，白底模板重新安装一次软件就能补回；'+remote]
+      :!max?['先指定 3ds Max','找到 3ds Max 后才能出图；'+remote]
+      :['白底模板文件不见了','重新安装一次软件就能补回，任务和图片不会丢；也可以先在右上角「渲染位置」选一台内网渲染机'];
+    $('setup-title').textContent=title;$('setup-text').textContent=text;
   }
   async function show(){
     showDesktop();
@@ -72,7 +84,7 @@ export function installSettings({$,api,toast,guard,escape}){
   $('node-forget').onclick=guard(()=>nodeAction($('node-forget'),'/api/render-node/forget-clients','正在断开…'));
   $('node-firewall').onclick=guard(()=>nodeAction($('node-firewall'),'/api/render-node/firewall','等待确认…'));
   async function checkReady(){
-    try{const data=await api('/api/settings');state=data;$('setup-banner').hidden=data.ready;}
+    try{const data=await api('/api/settings');state=data;banner(data);}
     catch{ $('setup-banner').hidden=true; }
   }
   async function pick(kind,input){

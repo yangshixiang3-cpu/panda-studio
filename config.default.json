@@ -1,0 +1,37 @@
+{
+  "port": 8770,
+  "exchange_dir": "exchange",
+  "max_exe": "",
+  "template_anchor": { "x_mm": 444.0, "back_y_mm": 461.0, "floor_z_mm": 0.0 },
+  "render_preset_rps": null,
+  "final_size": {"portrait": [3000, 4000], "landscape": [4000, 3000]},
+  "smallshot_size": {"portrait": [600, 800], "landscape": [800, 600]},
+  "smallshot_time_limit_sec": 25,
+  "max_lock_owner_prefix": "WhiteBG",
+  "key_light_intensity": 12,
+  "lighting_tuning": {
+    "fill_min": 0.1,
+    "fill_gamma": 1,
+    "env_gi_min": 0.15,
+    "key_size_max": 0.5,
+    "key_size_min": 0.25,
+    "key_distance": 2.5,
+    "key_intensity": 1,
+    "key_compensation": 111,
+    "bg_fill_keep": 0,
+    "probe": false,
+    "env_gi_properties": {
+      "direct_enabled": "BG_OVERRIDEDIRECT",
+      "direct_color": "bg_colorDirect",
+      "source_color": "BG_COLOR"
+    }
+  },
+  "codex_command": "codex",
+  "codex_home": null,
+  "codex_model": "gpt-6.1-sol",
+  "codex_effort": "medium",
+  "calibration_max_rounds": 3,
+  "calibration_auto": false,
+  "calibration_timeout_sec": 900,
+  "history_roots": []
+}

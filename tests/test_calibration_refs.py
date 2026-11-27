@@ -71,7 +71,7 @@ class CalibrationReferenceTests(unittest.TestCase):
         names = ['柜门 胡桃饰面', '柜门胡桃木', 'Iron Frame']
         library = self.library.read()
         self.assertEqual(match_task_region(region('柜门 胡桃饰面', 'scene'), names, library), names[:1])
-        self.assertEqual(match_task_region(region('胡桃饰面', 'scene'), names, library), [])
+        self.assertEqual(match_task_region(region('胡桃饰面', 'scene'), names, library), names[:2])
         self.assertEqual(match_task_region(region('胡桃木', 'library'), names, library), names[:2])
         self.assertEqual(match_task_region(region('柜门', 'new'), names, library), names[:2])
         self.assertEqual(match_task_region(region('iron frame 试色', 'new'), names, library), names[2:])
@@ -99,7 +99,8 @@ class CalibrationReferenceTests(unittest.TestCase):
                          [usage(entry, 0), usage(entry, 1), usage(entry, 3), usage(plain), None, None])
         with Image.open(images[0]) as image:
             lab = ', '.join(f'{value:.1f}' for value in srgb_to_lab(image.getpixel((0, 0))))
-        self.assertIn(f'用户为本任务提供的参考，优先级最高，{name} Lab≈({lab})', roles[0]['role'])
+        self.assertEqual(roles[0]['role'],
+                         f'用户为本任务提供的参考，优先级最高，对应场景材质「{name}」（参考材质：{name}，本任务标注参考，目标 Lab≈({lab})）')
         self.assertIn('其他参考（样板橙）', roles[2]['role'])
         self.assertIn('整体参考', roles[3]['role'])
         self.assertEqual(images[-2].name, Path(annotation_crop(old['file'], 0)).name)
@@ -158,11 +159,17 @@ class CalibrationReferenceTests(unittest.TestCase):
             self.update(entry, [region('正面材质', 'scene')])
         self.update(entry, regions, True)
         library_entry, = self.library.read()['annotated']
-        self.assertEqual(library_entry['regions'], [{k: library_box[k] for k in ('material', 'box')}])
-        self.assertNotIn('自定义', self.library.read()['materials'])
+        # 每个框都收进参考库：场景材质对不上关键词、新材质，都新建同名分组（去掉首尾空格）
+        self.assertEqual(library_entry['regions'], [{'material': '材质大小写 A', 'box': regions[0]['box']},
+                                                    {'material': '自定义', 'box': regions[1]['box']},
+                                                    {k: library_box[k] for k in ('material', 'box')}])
+        self.assertIn('自定义', self.library.read()['materials'])
+        self.assertIn('材质大小写 A', self.library.read()['materials'])
+        self.assertEqual(self.studio.load(self.id)['ai_calibration']['task_refs'][0]['library_file'], library_entry['file'])
         self.update(entry, regions, True)
         self.assertEqual(self.library.read()['annotated'], [library_entry])
-        self.update(entry, regions, False)
+        self.update(entry, regions, False)                       # 旧的「不加入参考库」选项不再起作用，也不会多出一份
+        self.assertEqual(self.library.read()['annotated'], [library_entry])
         crop = self.folder/task_ref_crop(entry['file'], 0)
         self.assertTrue(crop.is_file())
         self.calibration.change_ref(self.id, entry['id'])
@@ -171,6 +178,60 @@ class CalibrationReferenceTests(unittest.TestCase):
         self.assertEqual(self.studio.describe(self.id)['task']['ai_calibration']['task_refs'], [])
         self.assertEqual(self.library.read()['annotated'], [library_entry])
         self.assertTrue((self.root/annotation_crop(library_entry['file'], 0)).is_file())
+
+    def test_every_task_ref_goes_to_library_and_same_image_merges(self):
+        first = self.update(self.upload(), [region('摩卡红橡', 'library'), region('柜门 胡桃饰面', 'new', [.6, .1, .2, .5])])
+        library = self.library.read()
+        entry, = library['annotated']
+        self.assertEqual([r['material'] for r in entry['regions']], ['摩卡红橡', '胡桃木'])   # 新材质名按关键词归到胡桃木
+        self.assertNotIn('柜门 胡桃饰面', library['materials'])
+        # 同一张图在另一个任务里又用了：并进同一张，同材质的框换成新的，别的材质保留
+        other = self.studio.create({'product_dir': str(self.product)})['id']
+        again = self.calibration.upload_ref(other, '色卡.png', self.content)
+        self.calibration.change_ref(other, again['id'], {'regions': [region('摩卡红橡', 'library', [.3, .3, .2, .2]),
+                                                                     region('样板橙', 'new')]})
+        merged, = self.library.read()['annotated']
+        self.assertEqual(merged['file'], entry['file'])
+        self.assertEqual([(r['material'], r['box']) for r in merged['regions']],
+                         [('胡桃木', [.6, .1, .2, .5]), ('摩卡红橡', [.3, .3, .2, .2]), ('样板橙', [.05, .1, .2, .5])])
+        self.assertIn('样板橙', self.library.read()['materials'])
+        for index in range(3):
+            self.assertTrue((self.root/annotation_crop(merged['file'], index)).is_file())
+        # 整体参考（没有框）不收
+        self.update(self.upload('整体.png'), [])
+        self.assertEqual(len(self.library.read()['annotated']), 1)
+        self.assertEqual(first['library_file'], entry['file'])
+
+    def test_picking_library_annotation_reuses_it(self):
+        saved = self.library.save_annotation([region('胡桃木', 'library')], source='库里的图.png', content=self.content)
+        picked = self.calibration.upload_ref(self.id, '库里的图.png', b'x', library_file=saved['file'])
+        self.assertEqual(picked['library_file'], saved['file'])
+        self.assertEqual((self.folder/picked['file']).read_bytes(), (self.root/saved['file']).read_bytes())  # 原样拷过来
+        self.calibration.change_ref(self.id, picked['id'], {'regions': [region('胡桃木', 'library', [.4, .4, .2, .2]),
+                                                                        region('奶油白', 'library')]})
+        entry, = self.library.read()['annotated']
+        self.assertEqual(entry['file'], saved['file'])
+        self.assertEqual([(r['material'], r['box']) for r in entry['regions']],
+                         [('胡桃木', [.4, .4, .2, .2]), ('奶油白', [.05, .1, .2, .5])])
+        with self.assertRaises(StudioError):
+            self.calibration.upload_ref(self.id, 'x.png', b'x', library_file='refs/annotated/../../config.json')
+
+    def test_old_task_refs_are_synced_once(self):
+        entry = self.upload()
+        task = self.studio.load(self.id)
+        old = task['ai_calibration']['task_refs'][0]
+        old.update(in_library=False, regions=[region('胡桃木', 'library'), region('长虹玻璃', 'library', [.5, .1, .3, .3])])
+        old.pop('library_synced', None)
+        self.studio.save(task)
+        self.assertEqual(self.library.read()['annotated'], [])
+        self.assertEqual(self.calibration.sync_library(), 1)
+        library_entry, = self.library.read()['annotated']
+        self.assertEqual([r['material'] for r in library_entry['regions']], ['胡桃木', '长虹玻璃'])
+        synced = self.studio.load(self.id)['ai_calibration']['task_refs'][0]
+        self.assertEqual((synced['library_synced'], synced['library_file']), (True, library_entry['file']))
+        self.assertEqual(self.calibration.sync_library(), 0)                       # 已经收过的不再处理
+        self.assertEqual(len(self.library.read()['annotated']), 1)
+        self.assertEqual(entry['id'], synced['id'])
 
     def test_cleanup_removes_task_ref_files_and_entries(self):
         self.update(self.upload(), [region('摩卡红橡', 'library')], True)

@@ -91,7 +91,7 @@ class FakeRelay:
 
 
 def temp_root():
-    directory = ROOT.parent/'codex-tasks'/'wb-24-tmp'/('ai-api-'+uuid4().hex)
+    directory = ROOT/'tests'/'tmp'/('ai-api-'+uuid4().hex)
     directory.mkdir(parents=True)
     return directory
 

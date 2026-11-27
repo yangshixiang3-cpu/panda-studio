@@ -39,6 +39,8 @@ BUNDLE_MAX_FILES = 20000
 # 渲染机解包时的上限（防止异常压缩包撑爆磁盘）
 EXTRACT_MAX_BYTES = 8 * 1024 ** 3
 EXTRACT_MAX_FILES = 50000
+OUTPUT_SUFFIXES = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.json', '.log', '.fbx', '.txt'})
+CALIBRATION_ROUND_RE = re.compile(r'^round-\d+$')
 
 
 class ProtocolError(ValueError):
@@ -55,6 +57,19 @@ def safe_rel(value):
     if not parts or any(part in ('', '.', '..') or re.search(r'[<>"|?*\x00-\x1f]', part) for part in parts):
         raise ProtocolError('相对路径无效：' + value)
     return '/'.join(parts)
+
+
+def safe_output_rel(value):
+    """检查渲染机回传的任务内输出相对路径：只允许结果子目录与白名单扩展名，绝不允许任务根目录（如 task.json）。"""
+    rel = safe_rel(value)
+    parts = PurePosixPath(rel).parts
+    allowed = (
+        (len(parts) >= 2 and parts[0] in ('preview', 'smallshots', 'final'))
+        or (len(parts) >= 3 and parts[0] == 'calibration' and bool(CALIBRATION_ROUND_RE.fullmatch(parts[1])))
+    )
+    if not allowed or PurePosixPath(rel).suffix.lower() not in OUTPUT_SUFFIXES:
+        raise ProtocolError('渲染机返回了不允许的输出路径：' + rel)
+    return rel
 
 
 def inside(path, root):
@@ -139,6 +154,7 @@ def extract_bundle(archive_path, target):
                 raise ProtocolError('模型包文件太多。')
             if sum(e.file_size for e in entries) > EXTRACT_MAX_BYTES:
                 raise ProtocolError('模型包太大。')
+            written = 0
             for entry in entries:
                 if entry.is_dir():
                     continue
@@ -148,7 +164,14 @@ def extract_bundle(archive_path, target):
                     raise ProtocolError('模型包路径越界。')
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(entry) as source, destination.open('wb') as stream:
-                    shutil.copyfileobj(source, stream, 1024 * 1024)
+                    while True:
+                        chunk = source.read(min(1024 * 1024, EXTRACT_MAX_BYTES - written + 1))
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > EXTRACT_MAX_BYTES:
+                            raise ProtocolError('模型包解压后太大。')
+                        stream.write(chunk)
         try:
             os.replace(temp, target)
         except OSError:
@@ -241,7 +264,8 @@ def node_job(portable, *, node_exchange, node_job_id, node_task_id, bundle_dir, 
     return job, sorted(folders)
 
 
-ABSOLUTE_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\|//)')
+ABSOLUTE_RE = re.compile(r'^(?:[A-Za-z]:|[\\/])')
+DRIVE_RELATIVE_RE = re.compile(r'^[A-Za-z]:(?![\\/])')
 
 
 def _reject_outside(value, workspace):
@@ -252,8 +276,9 @@ def _reject_outside(value, workspace):
     elif isinstance(value, list):
         for item in value:
             _reject_outside(item, workspace)
-    elif isinstance(value, str) and ABSOLUTE_RE.match(value) and not inside(value, workspace):
-        raise ProtocolError('作业里有不允许的路径：' + value)
+    elif isinstance(value, str) and ABSOLUTE_RE.match(value):
+        if DRIVE_RELATIVE_RE.match(value) or (os.name == 'nt' and not Path(value).is_absolute()) or not inside(value, workspace):
+            raise ProtocolError('作业里有不允许的路径：' + value)
 
 
 def portable_status(status, workspace, task_id):
@@ -276,14 +301,16 @@ def portable_status(status, workspace, task_id):
 
 
 def local_path(value, exchange, task_id):
-    """本机：把 "@ex:tasks/<任务号>/…" 换回本机交换目录里的绝对路径（只允许落在这个任务的文件夹里）。"""
+    """本机：把 "@ex:tasks/<任务号>/…" 换回本机交换目录里的绝对路径（只允许落在任务结果子目录的白名单文件里）。"""
     if not isinstance(value, str) or not value.startswith(EX_PREFIX):
         return value
     rel = safe_rel(value[len(EX_PREFIX):])
-    if not rel.startswith(f'tasks/{task_id}/'):
+    prefix = f'tasks/{task_id}/'
+    if not rel.startswith(prefix):
         raise ProtocolError('渲染机返回的路径不在本任务里。')
+    sub = safe_output_rel(rel[len(prefix):])
     exchange = Path(exchange).resolve()
-    path = exchange / rel
+    path = exchange / 'tasks' / task_id / sub
     if not inside(path, exchange / 'tasks' / task_id):
         raise ProtocolError('渲染机返回的路径越界。')
     return str(path)

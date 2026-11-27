@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
-TMP = Path(__file__).resolve().parents[2]/'codex-tasks'/'wb-24-tmp'
+TMP = Path(__file__).resolve().parent/'tmp'
 
 
 def test_directory(case, prefix):

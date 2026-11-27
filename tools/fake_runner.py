@@ -8,7 +8,36 @@ from pathlib import Path
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from server.core import ROOT, atomic_json, backup, inside, now, read_json
-from max.wb_core import RunnerHeartbeat
+from max.wb_core import RunnerHeartbeat, is_job_json_file
+
+
+def fake_scene_manifest():
+    return {
+        'materials': [
+            {
+                'name': '摩卡红橡', 'class': 'CoronaPhysicalMtl', 'objects': 2, 'kind': 'wood',
+                'color': [180, 140, 105], 'bitmap': '木纹.jpg',
+                'params': {'baseColor': [180, 140, 105], 'baseLevel': 1.0, 'baseroughness': 0.7,
+                           'roughnessMode': 1.0, 'baseIor': 1.507},
+            },
+            {
+                'name': '奶油白', 'class': 'CoronaPhysicalMtl', 'objects': 1, 'kind': 'solid',
+                'color': [230, 225, 210], 'bitmap': None,
+                'params': {'baseColor': [230, 225, 210], 'baseLevel': 1.0, 'baseroughness': 0.22,
+                           'roughnessMode': 1.0, 'baseIor': 1.52},
+            },
+            {
+                'name': '长虹玻璃', 'class': 'CoronaPhysicalMtl', 'objects': 1, 'kind': 'glass',
+                'color': [180, 200, 205], 'bitmap': None,
+                'params': {'baseColor': [180, 200, 205], 'baseroughness': 0.08, 'roughnessMode': 1.0,
+                           'baseIor': 1.52, 'refractionamount': 0.92, 'opacityLevel': 1.0},
+            },
+        ],
+        'lights': [{'name': '主灯', 'intensity': 15, 'pos_mm': [1000, -1000, 2000]}],
+        'environment': {'reflect_map': None},
+        'product_center_mm': [0, 0, 0],
+        'unsupported': [],
+    }
 
 
 def process_job(job_path, fixture, heartbeat=None):
@@ -39,16 +68,15 @@ def process_job(job_path, fixture, heartbeat=None):
             # 此测试 FBX 的实测闭合尺寸；网页读取 FBX 后按这些毫米尺寸核对。
             atomic_json(output(job['out_bbox'], preserve=False),{'units':'mm','max_world_bbox_mm':{'min':[-1000.003886291128,-800.000744123546,0],'max':[1000.003886291128,800.000744123546,2340.126965060298]},
                 'size_mm':{'x':2000.007772582256,'y_up':2340.126965060298,'z_depth':1600.0014882470925},'mesh_count':180})
+            preview_manifest=exchange/'tasks'/job['task_id']/'preview'/'scene_manifest.json'
+            atomic_json(output(preview_manifest, preserve=False),fake_scene_manifest())
         elif job['type']=='render':
             font_path=Path('C:/Windows/Fonts/msyh.ttc')
+            preview_manifest=exchange/'tasks'/job['task_id']/'preview'/'scene_manifest.json'
+            atomic_json(output(preview_manifest, preserve=False),fake_scene_manifest())
             if job.get('want_manifest'):
                 folder=Path(job['calibration_dir'])
-                atomic_json(output(folder/'scene_manifest.json', preserve=False),{
-                    'materials':[{'name':'摩卡红橡','class':'CoronaPhysicalMtl','objects':2,'kind':'wood','color':[180,140,105],'bitmap':'木纹.jpg','params':{}},
-                                 {'name':'奶油白','class':'CoronaPhysicalMtl','objects':1,'kind':'solid','color':[230,225,210],'bitmap':None,'params':{}},
-                                 {'name':'长虹玻璃','class':'CoronaPhysicalMtl','objects':1,'kind':'glass','color':[180,200,205],'bitmap':None,'params':{}}],
-                    'lights':[{'name':'主灯','intensity':15,'pos_mm':[1000,-1000,2000]}],
-                    'environment':{'reflect_map':None},'product_center_mm':[0,0,0],'unsupported':[]})
+                atomic_json(output(folder/'scene_manifest.json', preserve=False),fake_scene_manifest())
                 atomic_json(output(folder/'regions'/'legend.json', preserve=False),{'#FF0000':'摩卡红橡','#00FF00':'奶油白','#0000FF':'长虹玻璃'})
             for item in job['items']:
                 progress={'no':item['no'],'state':'rendering','started_at':now(),
@@ -93,8 +121,9 @@ def process_job(job_path, fixture, heartbeat=None):
 
 def run_once(exchange,fixture,heartbeat=None):
     jobs=[]
-    for path in (Path(exchange)/'jobs').glob('*.json'):
-        if '.status.' not in path.name:
+    jobs_dir=Path(exchange)/'jobs'
+    for path in (sorted(jobs_dir.iterdir()) if jobs_dir.is_dir() else ()):
+        if is_job_json_file(path):
             job=read_json(path);jobs.append((job['created_at'],path.name,path))
     return sum(process_job(p,fixture,heartbeat) for _,_,p in sorted(jobs))
 

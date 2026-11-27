@@ -2,9 +2,12 @@
 import math
 import os
 import subprocess
+import threading
 import time
 
 BUSY_GRACE_SEC = 1800
+RENDERING_GRACE_SEC = 4 * 3600
+PROBE_TTL_SEC = 5.0
 
 
 def visible_windows(pids):
@@ -36,20 +39,59 @@ def visible_windows(pids):
 class RunnerStatus:
     def __init__(self, root, exchange, config):
         self.root = root
+        self.exchange = exchange
         self.heartbeat_path = exchange / 'runner.heartbeat.json'
         self.executable = (root / config['max_exe']).resolve() if config.get('max_exe') else None
         self._max_running = False
         self._max_windows = []
         self._max_hidden = 0
         self._probe_until = 0
+        self._probe_lock = threading.Lock()
+        self._probing = False
+        self._probe_deps = None
+
+    def _current_probe_deps(self):
+        probe_fn = getattr(self._probe_max, '__func__', self._probe_max)
+        return (probe_fn, subprocess.run, visible_windows)
+
+    def _apply_probe(self, probe, deps):
+        if isinstance(probe, bool):          # 兼容只返回真假值的旧调用和测试替身
+            probe = (probe, [], 0)
+        with self._probe_lock:
+            self._max_running, self._max_windows, self._max_hidden = probe
+            self._probe_until = time.monotonic() + PROBE_TTL_SEC
+            self._probe_deps = deps
+
+    def _refresh_sync(self):
+        deps = self._current_probe_deps()
+        probe = self._probe_max()
+        self._apply_probe(probe, deps)
+        return self._max_running
+
+    def warm_async(self):
+        with self._probe_lock:
+            if self._probing:
+                return
+            self._probing = True
+
+        def worker():
+            try:
+                deps = self._current_probe_deps()
+                probe = self._probe_max()
+                self._apply_probe(probe, deps)
+            finally:
+                with self._probe_lock:
+                    self._probing = False
+
+        threading.Thread(target=worker, daemon=True, name='whitebg-max-probe').start()
 
     def max_running(self):
-        if time.monotonic() >= self._probe_until:
-            probe = self._probe_max()
-            if isinstance(probe, bool):          # 兼容只返回真假值的旧调用和测试替身
-                probe = (probe, [], 0)
-            self._max_running, self._max_windows, self._max_hidden = probe
-            self._probe_until = time.monotonic() + 5
+        now = time.monotonic()
+        deps = self._current_probe_deps()
+        if self._probe_until <= 0 or deps != self._probe_deps:
+            return self._refresh_sync()
+        if now >= self._probe_until:
+            self.warm_async()
         return self._max_running
 
     @staticmethod
@@ -77,6 +119,21 @@ class RunnerStatus:
         shown = {pid for pid, _ in windows}
         return bool(titles), titles[:3], len(pids - shown)
 
+    def _has_active_rendering_job(self, job_id):
+        """作业状态文件确实处于 running/rendering 时，允许更长的同步渲染宽限期（如 8K 大图）。"""
+        from .core import read_json
+        if not isinstance(job_id, str) or not job_id or any(c in job_id for c in '/\\:'):
+            return False
+        path = self.exchange / 'jobs' / f'{job_id}.status.json'
+        try:
+            status = read_json(path)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(status, dict) or status.get('state') != 'running':
+            return False
+        items = status.get('items')
+        return not items or any(isinstance(i, dict) and i.get('state') == 'rendering' for i in items)
+
     def status(self):
         from .core import read_json
 
@@ -90,10 +147,12 @@ class RunnerStatus:
         epoch = heartbeat.get('epoch')
         age = max(0, time.time() - epoch) if type(epoch) in (float, int) and math.isfinite(epoch) else None
         max_running = self.max_running()
-        # Corona 同步渲染会卡住 Max 主线程，期间写不了心跳：最后一次心跳报"忙"且 Max 进程还在时，最长 30 分钟内仍算在线。
+        # Corona 同步渲染会卡住 Max 主线程：正常 30 分钟宽限；有活跃 rendering 作业时宽限放宽到 4 小时。
+        busy = heartbeat.get('busy') is True
+        grace = RENDERING_GRACE_SEC if (busy and self._has_active_rendering_job(heartbeat.get('job_id'))) else BUSY_GRACE_SEC
         online = (not heartbeat.get('stopped') and age is not None
-                  and (age <= 12 or (heartbeat.get('busy') is True and max_running and age <= BUSY_GRACE_SEC)))
-        return {'online': online, 'age_sec': age, 'busy': online and heartbeat.get('busy') is True,
+                  and (age <= 12 or (busy and max_running and age <= grace)))
+        return {'online': online, 'age_sec': age, 'busy': online and busy,
                 'job_id': heartbeat.get('job_id') if online else None, 'max_running': max_running,
                 'max_windows': self._max_windows, 'max_hidden': self._max_hidden,
                 'can_start': not online and not max_running and self.executable is not None
@@ -102,6 +161,8 @@ class RunnerStatus:
     def start(self):
         from .core import StudioError
 
+        # 用户显式点击启动时强制同步刷新一次，避免刚关闭 Max 仍命中旧缓存
+        self._probe_until = 0
         status = self.status()
         if status['online']:
             raise StudioError('执行器已经在运行。', 409)
@@ -118,6 +179,8 @@ class RunnerStatus:
                          env={**os.environ, 'WHITEBG_RUNNER_SCRIPT': script},
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          **options)
-        self._max_running = True
-        self._probe_until = time.monotonic() + 5
+        with self._probe_lock:
+            self._max_running = True
+            self._probe_until = time.monotonic() + PROBE_TTL_SEC
+            self._probe_deps = self._current_probe_deps()
         return {'started': True}

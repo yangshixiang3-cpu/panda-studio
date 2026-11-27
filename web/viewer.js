@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {RoomEnvironment} from 'three/addons/environments/RoomEnvironment.js';
-import {parseFbx} from './model/loaders.js';
+import {parseFbx,parseFbxAsset} from './model/loaders.js';
 import {corners,projectPoint,verticalProjection} from './camera.js';
 import {DEFAULT_LIGHTING,DEFAULT_LIGHTING_TUNING,lightDirection,lightingActive,lightingResponse,lightingText,
   previewFinishTint,previewKeyIrradiance} from './lighting.js';
@@ -36,6 +36,9 @@ export class Viewer {
   clear(){
     if(!this.model)return;
     this.scene.remove(this.model.root);this.model.dispose();this.model=null;
+  }
+  prepareFbx(buffer,options){
+    return parseFbxAsset(buffer,options);
   }
   load(buffer,options){
     const model=parseFbx(buffer,{...options,envMap:this.environment.texture,

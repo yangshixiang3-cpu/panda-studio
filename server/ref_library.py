@@ -51,10 +51,204 @@ def merge_builtin(library, path):
     return library
 
 
+RESERVED_NAMES = {'style', 'annotated', 'con', 'aux', 'nul', 'prn',
+                  *(f'{prefix}{i}' for prefix in ('com', 'lpt') for i in range(1, 10))}
+BAD_NAME_CHARS = r'[<>:"/\\|?*\x00-\x1f]'
+
+_MODEL_PREFIX_RE = re.compile(
+    r'^(?:(?:mtl|mat|vray|corona|cr|std|pbr|tex|id|sub)(?:[\s_\-\.:#/]+\d*|\d+)|m\d*[\s_\-\.:#/]+|\d+[\s_\-\.:#/]+)+',
+    re.I,
+)
+_GENERIC_MAX_NAME_RE = re.compile(
+    r'^(?:material|default|standard|corona\w*|vray\w*|physical\w*)[\s_\-\.#0-9]*$',
+    re.I,
+)
+_BRACKET_SUFFIX_RE = re.compile(r'(?:\s*[\(\[（【][^)\]）】]{0,20}[\)\]）】])+$')
+_TRAIL_SUFFIX_RE = re.compile(
+    r'(?:[\s_\-\.#/]+\d+|(?<=[^\da-zA-Z\s_\-\.#/])\d+|[\s_\-\./]+(?:copy|inst|instance|v\d+|[a-z]))+$',
+    re.I,
+)
+_SEP_STRIP_RE = re.compile(r'^[\s_\-\./:：·|#]+|[\s_\-\./:：·|#]+$')
+_PART_PREFIXES = (
+    '柜体', '柜门', '门板', '侧板', '背板', '层板', '顶板', '底板', '面板', '台面',
+    '抽屉', '抽面', '框架', '脚架', '柜脚', '桌腿', '拉手', '把手', '封边', '格栅',
+    '线条', '内衬', '主体', '外框', '边框', '主材', '辅材', '材质',
+)
+_FINISH_SUFFIXES = (
+    '木饰面', '饰面板', '饰面', '木皮', '贴皮', '贴面', '清漆', '木纹', '板材', '材质',
+)
+GENERIC_MATERIAL_WORDS = frozenset({
+    '玻璃', '清玻', '茶玻', '灰玻', '黑玻', '白玻', '超白玻', '超白玻璃', '钢化玻璃',
+    '普通玻璃', '透明玻璃', '磨砂玻璃', '有色玻璃', '茶色玻璃', '灰色玻璃', '黑色玻璃',
+    '木纹', '木皮', '实木', '板材', '饰面', '烤漆', '清漆', '油漆', '肤感', '哑光', '亮光', '拉丝',
+    '金属', '五金', '不锈钢', '铝合金', '铁艺', '石材', '大理石', '岩板', '皮革', '布艺', '塑料',
+    '深色', '浅色', '亮色', '暗色', '纯色', '透明',
+    '材质', '默认', '其他', 'default', 'material', 'standard', 'physical', 'corona', 'vray', 'metal', 'glass', 'wood',
+})
+SYNONYM_RULES = (
+    ('摩卡红橡', ('摩卡红橡', '北美红橡', '红橡木', '摩卡橡木', '深红橡', '红橡', 'red oak')),
+    ('胡桃木', ('北美黑胡桃', '焦糖胡桃', '黑胡桃', '北美胡桃', '深胡桃', '浅胡桃', '黄金胡桃', '秋木胡桃', '胡桃木色', '胡桃色', 'walnut')),
+    ('奶油白', ('奶油肤感', '奶白色', '暖白色', '米白色', '羊绒白', '象牙白', '珍珠白', '肤感白', '柔光白', '奶油色', '暖白', '奶白', '米白')),
+    ('北欧橡木', ('北欧白橡', '自然橡木', '日系原木', '白蜡木', '白橡木', '原木色', '浅橡木', '水曲柳', '原木', '白蜡', '白橡', '浅橡', 'ash wood', 'white oak')),
+    ('幻影灰', ('莫兰迪灰', '太空灰', '岩石灰', '水泥灰', '绅士灰', '石墨灰', '深灰色', '高级灰', '深灰', '暗灰', '烟灰', '铁灰', '暖灰', '冷灰', '中灰')),
+    ('纯黑', ('曜石黑', '哑光黑', '拉丝黑', '磨砂黑', '烤漆黑', '哑黑', '雅黑', '碳黑', '炭黑', '亮黑', '黑砂', '黑钛', '深黑')),
+    ('长虹玻璃', ('长虹玻璃', '长虹玻', '长虹')),
+)
+
+
+def valid_material_name(name):
+    return bool(name) and len(name) <= 60 and not name.endswith('.') and not re.search(BAD_NAME_CHARS, name) \
+        and name.split('.')[0].casefold() not in RESERVED_NAMES
+
+
+def clean_material_name(name):
+    """场景材质名、新材质名 → 能当参考库分组的名字（去掉文件名里不能用的字符）；整理后还不能用就返回空。"""
+    name = re.sub(r'\s+', ' ', re.sub(BAD_NAME_CHARS, ' ', str(name or ''))).strip().rstrip('.').strip()[:60].strip()
+    return name if valid_material_name(name) else ''
+
+
+def core_material_name(name):
+    """剥除 Max 常见建模前后缀、部件前缀、工艺后缀与尾号，提取核心材质词。"""
+    text = str(name or '').strip()
+    if not text or _GENERIC_MAX_NAME_RE.fullmatch(text):
+        return ''
+    text = _BRACKET_SUFFIX_RE.sub('', text).strip()
+    text = _MODEL_PREFIX_RE.sub('', text).strip()
+    text = _TRAIL_SUFFIX_RE.sub('', text).strip()
+    text = _SEP_STRIP_RE.sub('', text)
+    if not text or _GENERIC_MAX_NAME_RE.fullmatch(text):
+        return ''
+    changed = True
+    while changed and text:
+        changed = False
+        for prefix in _PART_PREFIXES:
+            if text.startswith(prefix):
+                rest = _SEP_STRIP_RE.sub('', text[len(prefix):])
+                if len(rest) >= 2:
+                    text = rest
+                    changed = True
+                    break
+    changed = True
+    while changed and text:
+        changed = False
+        for suffix in _FINISH_SUFFIXES:
+            if text.endswith(suffix):
+                rest = _SEP_STRIP_RE.sub('', text[:-len(suffix)])
+                if len(rest) >= 2:
+                    text = rest
+                    changed = True
+                    break
+    return _SEP_STRIP_RE.sub('', text)
+
+
+def _allow_fluted_glass(raw_folded, key, word=''):
+    """普通玻璃/清玻/茶玻等绝不能误配到长虹玻璃；只有含「长虹」才允许配长虹玻璃。"""
+    if '长虹' in key.casefold() or '长虹' in word.casefold():
+        return '长虹' in raw_folded
+    return True
+
+
 def material_key(name, library):
-    matches = [(len(word), key) for key, entry in library['materials'].items()
-               for word in entry['keywords'] if word.casefold() in name.casefold()]
-    return max(matches)[1] if matches else None
+    if not isinstance(name, str) or not name.strip() or not isinstance(library, dict):
+        return None
+    materials = library.get('materials') or {}
+    if not materials:
+        return None
+    raw = name.strip()
+    raw_folded = raw.casefold()
+    core = core_material_name(raw)
+    core_folded = core.casefold()
+
+    # 0) 原名与分组名精确匹配最高优先级
+    for key in materials:
+        if key.casefold() == raw_folded and _allow_fluted_glass(raw_folded, key):
+            return key
+
+    # ① 清洗前后与关键词精确相等（最长词优先）
+    exact_matches = [
+        (len(word), key)
+        for key, entry in materials.items()
+        for word in (entry.get('keywords') or [key])
+        if word and _allow_fluted_glass(raw_folded, key, word)
+        and word.casefold() in (raw_folded, core_folded)
+    ]
+    if exact_matches:
+        return max(exact_matches)[1]
+
+    # ② 关键词包含于场景材质名（最长词优先）
+    sub_matches = [
+        (len(word), key)
+        for key, entry in materials.items()
+        for word in (entry.get('keywords') or [key])
+        if word and _allow_fluted_glass(raw_folded, key, word)
+        and (word.casefold() in raw_folded or (core_folded and word.casefold() in core_folded))
+    ]
+    best_sub = max(sub_matches) if sub_matches else None
+
+    # ③ 清洗后的核心材质名（长度 ≥ 2 且非泛化材质词）包含于参考库组名/关键词
+    best_reverse = None
+    if len(core_folded) >= 2 and core_folded not in GENERIC_MATERIAL_WORDS:
+        reverse_matches = []
+        for key, entry in materials.items():
+            configured = entry.get('keywords')
+            default_words = KEYWORDS.get(key)
+            if not configured or configured == default_words:
+                targets = list(dict.fromkeys([*(configured or []), key]))
+            else:
+                targets = list(configured)
+            for target in targets:
+                tf = target.casefold()
+                if target and _allow_fluted_glass(raw_folded, key, target) and core_folded in tf:
+                    reverse_matches.append((core_folded == tf, len(core_folded), -len(tf), key))
+        if reverse_matches:
+            best_reverse = max(reverse_matches)
+
+    if best_sub and best_reverse:
+        return best_reverse[3] if best_reverse[1] > best_sub[0] else best_sub[1]
+    if best_sub:
+        return best_sub[1]
+    if best_reverse:
+        return best_reverse[3]
+
+    # ④ 安全同义词兜底映射（普通玻璃绝不误配长虹玻璃）
+    synonym_matches = []
+    for target_key, aliases in SYNONYM_RULES:
+        if not _allow_fluted_glass(raw_folded, target_key):
+            continue
+        resolved = target_key if target_key in materials else next(
+            (k for k in materials if k.casefold() == target_key.casefold()), None
+        )
+        if resolved is None:
+            continue
+        for alias in aliases:
+            af = alias.casefold()
+            if not _allow_fluted_glass(raw_folded, resolved, alias):
+                continue
+            if af in (raw_folded, core_folded):
+                synonym_matches.append((2, len(af), resolved))
+            elif af in raw_folded or (core_folded and af in core_folded):
+                synonym_matches.append((1, len(af), resolved))
+    if synonym_matches:
+        return max(synonym_matches)[2]
+    return None
+
+
+def effective_material_ref(name, library, bindings=None):
+    """结合显式 material_bindings 与自动 material_key 返回实际生效的参考库材质键。"""
+    if not isinstance(name, str) or not name.strip():
+        return None
+    materials = (library or {}).get('materials') or {}
+    if isinstance(bindings, dict) and name in bindings:
+        bound = bindings[name]
+        if bound == '__none__':
+            return None
+        if isinstance(bound, str) and bound:
+            if bound in materials:
+                return bound
+            matched = next((k for k in materials if k.casefold() == bound.casefold()), None)
+            if matched is not None:
+                return matched
+    return material_key(name, library)
 
 
 def annotation_crop(file, index):
@@ -215,10 +409,7 @@ class RefLibrary:
         library = self.read()
         materials = library['materials']
         if create:
-            reserved = {'style', 'annotated', 'con', 'aux', 'nul', 'prn',
-                        *(f'{prefix}{i}' for prefix in ('com', 'lpt') for i in range(1, 10))}
-            if (not name or len(name) > 60 or name.endswith('.') or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
-                    or name.split('.')[0].casefold() in reserved):
+            if not valid_material_name(name):
                 raise StudioError('材质名称无效。')
             if any(name.casefold() == key.casefold() for key in materials):
                 raise StudioError('已有同名材质。', 409)
@@ -321,6 +512,81 @@ class RefLibrary:
             entry['regions'] = regions
             commit_annotation(stage, changes, lambda: self.save(library))
         return entry
+
+    def library_material(self, library, name, source=None):
+        """AI 校准里框的材质 → 参考库里的材质分组：参考库材质直接用；场景材质、新材质先找同名，
+        再按关键词归（如「柜门 胡桃饰面」→ 胡桃木），都对不上就新建一个同名分组（关键词就是这个名字）。"""
+        materials = library['materials']
+        if not isinstance(name, str) or not name.strip():
+            return None
+        if source == 'library' and name in materials:
+            return name
+        folded = name.strip().casefold()
+        same = next((key for key in materials if key.casefold() == folded), None)
+        key = same or material_key(name, library)
+        if key:
+            return key
+        clean = clean_material_name(name)
+        if not clean:
+            return None
+        same = next((key for key in materials if key.casefold() == clean.casefold()), None)
+        if same:
+            return same
+        materials[clean] = {'keywords': [clean], 'images': []}
+        return clean
+
+    def _sha(self, entry):
+        if not entry.get('sha'):
+            try:
+                entry['sha'] = hashlib.sha256(self.annotation_path(entry['file']).read_bytes()).hexdigest()
+            except (OSError, ValueError, KeyError):
+                return None
+        return entry['sha']
+
+    def absorb(self, original, regions, source, linked=None):
+        """把一张 AI 校准的材质参考收进参考库的标注参考图，每个框归到对应材质，参考库页对应材质下就能看到裁图。
+        - original：任务里的参考图（已经处理成 JPEG）；regions：任务里的框（带 material_source）；
+        - linked：这张图是从参考库哪张标注图点选来的，有就并进那一张；
+        - 同一张图（内容一样）在别的任务里又用了：并进已有的那一张，不重复加。合并时这张图里出现的材质，
+          框换成这次的；别的材质的框保留。
+        没有框（整体参考）不收。返回参考库里的文件名。"""
+        from .core import now
+        library = self.read()
+        mapped = []
+        for region in regions or []:
+            key = self.library_material(library, region.get('material'), region.get('material_source'))
+            if key:
+                mapped.append({'material': key, 'box': region['box']})
+        if not mapped:
+            return None
+        content = Path(original).read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        entry = next((e for e in library['annotated'] if linked and e['file'] == linked), None)
+        entry = entry or next((e for e in library['annotated'] if self._sha(e) == digest), None)
+        new = entry is None
+        if new:
+            entry = {'file': f'{ANNOTATION_DIR}/{digest[:20]}.jpg', 'source': source, 'created_at': now(),
+                     'regions': [], 'sha': digest}
+            library['annotated'].append(entry)
+        touched = {region['material'] for region in mapped}
+        regions = self.validate_regions([r for r in entry['regions'] if r['material'] not in touched] + mapped,
+                                        library['materials'])
+        file = entry['file']
+        target = self.annotation_path(file)
+        crops = [self.annotation_path(annotation_crop(file, i)) for i in range(max(len(regions), len(entry['regions'])))]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix='.annotation-', dir=target.parent) as temporary:
+            stage = Path(temporary)
+            staged_original = target
+            if new:
+                staged_original = stage/'original.jpg'
+                staged_original.write_bytes(content)
+            changes = stage_annotation_crops(staged_original, regions, crops, stage)
+            if new:
+                changes[target] = staged_original
+            entry['regions'] = regions
+            commit_annotation(stage, changes, lambda: self.save(library))
+        return file
 
     def delete_annotation(self, file):
         library = self.read()

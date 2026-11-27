@@ -2,11 +2,14 @@
 ; - 可选安装目录，默认装到第一个不是 C 盘的本地硬盘（如 D:\Panda Studio）；没有其他硬盘时才用 C 盘。
 ;   AppId 不变：从旧版本升级时沿用原来的安装目录（UsePreviousAppDir），并删掉旧名字的快捷方式和旧程序文件。
 ; - 程序文件从 WhiteBGStudio.exe 改名为 PandaStudio.exe：Windows 按程序路径缓存图标，换了文件名桌面图标才会刷新成熊猫。
-; - 按当前用户安装，不需要管理员权限。
+; - 按当前用户安装，不需要管理员权限。选了 C 盘的目录会提醒一次（建议装到其他盘），仍可继续。
+; - 版本号来自仓库根目录的 VERSION，由 build.ps1 用 /DAppVersion=<版本> 传入；单独编译时用下面的默认值。
 ; - config.json、参考库清单 refs\library.json 只在第一次安装时放入，升级重装不会覆盖；内置材质参考（refs 下的图片和 builtin.json）每次都更新；
-;   卸载时保留数据（exchange、用户的参考库清单、设置）。
+;   卸载与升级时保留数据（exchange、用户的参考库清单、设置、secrets 密钥与 webview-data 缓存）。
 #define AppName "Panda Studio"
-#define AppVersion "1.4.0"
+#ifndef AppVersion
+  #define AppVersion "1.7.2"
+#endif
 #define AppExe "PandaStudio.exe"
 #define DistDir "dist\PandaStudio"
 
@@ -22,7 +25,6 @@ DisableProgramGroupPage=yes
 DisableDirPage=no
 UsePreviousAppDir=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=output
@@ -108,6 +110,15 @@ begin
   if not WebView2Installed() then
     MsgBox('这台电脑没有检测到 Microsoft Edge WebView2 运行库，Panda Studio 的界面需要它。' + #13#10 +
            '安装完成后如果打不开，请到微软官网搜索「WebView2 Runtime」安装。', mbInformation, MB_OK);
+end;
+
+{ 选了 C 盘的目录：提醒建议装到其他盘（任务和出图都存在安装目录里，占空间），用户坚持就继续 }
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = wpSelectDir) and (CompareText(Copy(Trim(WizardDirValue), 1, 2), 'C:') = 0) then
+    Result := MsgBox('你选择装在 C 盘。Panda Studio 的任务和出图都保存在安装目录里，时间长了会占用不少空间，' +
+                     '建议装到 D 盘等其他硬盘。' + #13#10#13#10 + '仍然装在 C 盘吗？', mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 { 卸载时：取消「渲染机」的开机自启（这台电脑设为渲染机时登记在当前用户的 Run 键里） }
