@@ -163,13 +163,19 @@ class Runner:
             # 即使 acquire 抛异常，也按同一 owner 尝试 release；从不 force 释放别人的锁。
             if lock_attempted:
                 try:
-                    answer = str(rt.execute("::PFMaxLock.release {}".format(_ms_string(self.owner))))
+                    answer = str(rt.execute(
+                        '(if ::PFMaxLock == undefined then "OK 未加载锁脚本" else ::PFMaxLock.release {})'.format(
+                            _ms_string(self.owner))))
                     if acquired and not answer.startswith("OK"):
                         raise RuntimeError(answer)
                     if acquired:
                         self.log("已释放 Max 锁：" + answer)
                 except Exception:
-                    self.fail("释放 Max 锁失败：" + traceback.format_exc())
+                    err = "释放 Max 锁失败：" + traceback.format_exc()
+                    if acquired or self.status is None or self.status.get("state") != "failed":
+                        self.fail(err)
+                    else:
+                        self.log(err)
                 finally:
                     core.release_lock_file(self.exchange / core.LOCK_FILE_NAME, self.owner)
             if quiet_previous is not None:

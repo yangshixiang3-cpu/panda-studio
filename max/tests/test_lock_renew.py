@@ -140,6 +140,58 @@ class LockFileHelpersTests(unittest.TestCase):
         self.assertEqual(active_during_render, [True])
         self.assertFalse(any(t.name == "白底锁续期" and t.is_alive() for t in threading.enumerate()))
 
+    def test_maxscript_lock_has_no_chained_call_dot_and_release_preserves_acquire_error(self):
+        import re
+        for ms_file in sorted(MAX_DIR.glob("*.ms")):
+            text = ms_file.read_text(encoding="utf-8-sig")
+            # MAXScript 不支持 foo().bar 链式成员访问，会报「语法错误: 位于 .，需要 <因子>」
+            self.assertIsNone(
+                re.search(r'\(\)\.[A-Za-z_]', text),
+                f"{ms_file.name} 包含 MAXScript 不支持的 (). 链式调用",
+            )
+
+        fake_pymxs = types.ModuleType("pymxs")
+        runtime = mock.Mock()
+        fake_pymxs.runtime = runtime
+        fake_pymxs.byref = lambda value: value
+        fake_qt = types.ModuleType("PySide6")
+        fake_qt.QtCore, fake_qt.QtWidgets = mock.Mock(), mock.Mock()
+        spec = importlib.util.spec_from_file_location("_whitebg_runner_rel_test", MAX_DIR / "wb_runner.py")
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"pymxs": fake_pymxs, "PySide6": fake_qt}):
+            spec.loader.exec_module(module)
+
+        import json
+        jobs_dir = self.dir / "jobs"
+        jobs_dir.mkdir(parents=True)
+        job = {
+            "job_id": "20261127-104000-abcd",
+            "task_id": "20261127-104000-0001",
+            "type": "render",
+            "mode": "smallshot",
+            "created_at": "2026-11-27T10:40:00+09:00",
+            "items": [],
+        }
+        (jobs_dir / "20261127-104000-abcd.json").write_text(json.dumps(job), encoding="utf-8")
+        runner = object.__new__(module.Runner)
+        runner.exchange = self.dir
+        runner.config = {"max_lock_owner_prefix": "WhiteBG"}
+        runner.heartbeat = None
+        runner.job = runner.status = runner.status_path = runner.owner = None
+
+        calls = []
+        def fake_exec(script):
+            calls.append(script)
+            if len(calls) == 1:
+                raise RuntimeError("模拟 acquire 失败")
+            return "OK 未加载锁脚本"
+
+        runtime.execute.side_effect = fake_exec
+        status = runner.process_next()
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("模拟 acquire 失败", status["message"])
+        self.assertIn("::PFMaxLock == undefined", calls[1])
+
 
 if __name__ == "__main__":
     unittest.main()

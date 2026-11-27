@@ -62,12 +62,11 @@
                 if parent != undefined and parent != "" and not (dcls.Exists parent) then dcls.CreateDirectory parent
                 local body = "owner=" + owner + "\ntask=" + task + "\nstarted=" + started +
                              "\nepoch=" + (unixSec as string) + "\nstamp=" + stamp + "\n"
-                local tmp = PF_MAX_LOCK_FILE + "." + ((dotNetClass "System.Guid").NewGuid().ToString "N") + ".tmp"
+                local guid = (dotNetClass "System.Guid").NewGuid()
+                local tmp = PF_MAX_LOCK_FILE + "." + (guid.ToString "N") + ".tmp"
                 fcls.WriteAllText tmp body enc
-                try (fcls.Move tmp PF_MAX_LOCK_FILE true) catch (
-                    fcls.Copy tmp PF_MAX_LOCK_FILE true
-                    try (fcls.Delete tmp) catch ()
-                )
+                fcls.Copy tmp PF_MAX_LOCK_FILE true
+                try (fcls.Delete tmp) catch ()
             ) catch ()
             ok
         ),

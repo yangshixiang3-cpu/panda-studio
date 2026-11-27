@@ -772,3 +772,7 @@ render 任务新增字段：
 
 - **防火墙规则重建与公用网络兼容**（`server/node_setup.py`）：Windows 对未加域的办公室局域网默认归类为「公用网络（Public）」，`1.7.2` 起使用的 `profile=domain,private` 导致这类局域网上的渲染机被系统防火墙拦截 TCP `8775` / UDP `8776`。现改为先删除同名旧规则再添加，保持 `program="<exe>"` 与 `remoteip=LocalSubnet,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` 严格内网约束，同时覆盖 `profile=domain,private,public`；`_probe_firewall_rule()` 解析 `netsh ... verbose` 核对端口、配置文件与当前可执行文件路径，自动识别旧版/过期规则并在设置页显示「重新放行防火墙」。
 - **多网卡/代理 TUN 下的局域网发现与地址筛选**（`server/remote_client.py`、`server/render_node.py`）：`local_addresses()` 与 `local_lan_ips()` 过滤 `198.18.0.0/15`（Clash/Mihomo TUN 假网段）与 `169.254.0.0/16`，RFC 1918 地址优先；`discover()` 为每张真实局域网 IPv4 网卡单独绑定广播 socket 并分别向 `255.255.255.255` 及子网广播发送两轮探测包，以 `select.select` 并发收集回包，避免虚拟网卡劫持默认广播路由。
+
+### 15.19 1.8.3 3ds Max 锁脚本 MAXScript 语法热修（2026-11-27）
+
+- **修复 `max/pf_max_lock.ms` 在 3ds Max 2025 中的语法错误**：MAXScript 不支持 `().` 链式调用，原第 65 行 `(dotNetClass "System.Guid").NewGuid().ToString "N"` 在 `fileIn` 时报 `语法错误: 位于 .，需要 <因子>`，且随后 `finally` 中调用 `::PFMaxLock.release` 因 `::PFMaxLock` 未定义覆盖原报错。现改为 `local guid = (dotNetClass "System.Guid").NewGuid()` 后再调用 `guid.ToString "N"`，并以 .NET Framework 4.8 兼容的 `Copy(..., true)` + `Delete` 写入锁文件；`wb_runner.py` 释放锁前增加 `::PFMaxLock == undefined` 保护且不覆盖已有失败原因。
