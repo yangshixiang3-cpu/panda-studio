@@ -245,7 +245,12 @@ class ProbeAndTaskCacheTests(unittest.TestCase):
     def test_node_setup_firewall_ttl_cache(self):
         node_setup._firewall_cache.invalidate()
         self.addCleanup(node_setup._firewall_cache.invalidate)
-        proc = subprocess.CompletedProcess(args=['netsh'], returncode=0, stdout=b'ok', stderr=b'')
+        proc = subprocess.CompletedProcess(
+            args=['netsh'],
+            returncode=0,
+            stdout=b'Profile: Domain,Private,Public\nLocalPort: 8775\nLocalPort: 8776\n',
+            stderr=b'',
+        )
         with patch('server.node_setup.os.name', 'nt'), \
                 patch('server.node_setup.subprocess.run', return_value=proc) as mocked_run:
             self.assertTrue(node_setup.firewall_rule_exists())

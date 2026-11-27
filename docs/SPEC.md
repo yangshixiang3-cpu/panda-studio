@@ -767,3 +767,8 @@ render 任务新增字段：
 ### 15.17 1.8.1 新机安装启动热修（2026-11-27）
 
 - **修复新电脑首次安装报错 `Cannot find win-arm64`**：`pywebview/platforms/edgechromium.py` 导入时会无条件遍历 `('win-arm64', 'win-x64', 'win-x86')` 调用 `interop_dll_path()`，此前 `1.7.2`/`1.8.0` 在 `packaging/whitebg.spec` 的 `SKIP_BINARIES` 中排除了 `runtimes/win-(x86|arm64)/`，导致未装过旧版的电脑启动时报 `FileNotFoundError: Cannot find win-arm64`。已从 `SKIP_BINARIES` 移除该过滤，并在 `packaging/build.ps1` 中强制校验三个 `WebView2Loader.dll` 均存在。
+
+### 15.18 1.8.2 内网渲染机发现与公用网络防火墙修复（2026-11-27）
+
+- **防火墙规则重建与公用网络兼容**（`server/node_setup.py`）：Windows 对未加域的办公室局域网默认归类为「公用网络（Public）」，`1.7.2` 起使用的 `profile=domain,private` 导致这类局域网上的渲染机被系统防火墙拦截 TCP `8775` / UDP `8776`。现改为先删除同名旧规则再添加，保持 `program="<exe>"` 与 `remoteip=LocalSubnet,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` 严格内网约束，同时覆盖 `profile=domain,private,public`；`_probe_firewall_rule()` 解析 `netsh ... verbose` 核对端口、配置文件与当前可执行文件路径，自动识别旧版/过期规则并在设置页显示「重新放行防火墙」。
+- **多网卡/代理 TUN 下的局域网发现与地址筛选**（`server/remote_client.py`、`server/render_node.py`）：`local_addresses()` 与 `local_lan_ips()` 过滤 `198.18.0.0/15`（Clash/Mihomo TUN 假网段）与 `169.254.0.0/16`，RFC 1918 地址优先；`discover()` 为每张真实局域网 IPv4 网卡单独绑定广播 socket 并分别向 `255.255.255.255` 及子网广播发送两轮探测包，以 `select.select` 并发收集回包，避免虚拟网卡劫持默认广播路由。

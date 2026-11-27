@@ -173,15 +173,41 @@ def set_autostart(root, enabled):
 
 # ── 防火墙 ──
 
+def _decode_netsh(raw):
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, (bytes, bytearray)):
+        return ''
+    for enc in ('utf-8', 'gb18030', 'mbcs'):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode('utf-8', errors='ignore')
+
+
 def _probe_firewall_rule():
     if os.name != 'nt':
         return True
     try:
-        result = subprocess.run(['netsh', 'advfirewall', 'firewall', 'show', 'rule', f'name={RULE_NAME}'],
+        result = subprocess.run(['netsh', 'advfirewall', 'firewall', 'show', 'rule', f'name={RULE_NAME}', 'verbose'],
                                 capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    text = _decode_netsh(getattr(result, 'stdout', b''))
+    if not text.strip():
+        return True
+    low = text.lower()
+    if str(NODE_PORT) not in text or str(DISCOVERY_PORT) not in text:
+        return False
+    if not any(token in low or token in text for token in ('public', 'any', '公用', '任何')):
+        return False
+    exe = str(service_program()).replace('"', '').strip().lower()
+    if exe and ('.exe' in low) and exe not in low:
+        return False
+    return True
 
 
 def firewall_rule_exists(*, force=False):
@@ -208,10 +234,12 @@ def warm_async(root=None):
 
 
 def firewall_commands(program=None):
+    """先删同名旧规则再建：限定仅本程序且仅内网网段，同时覆盖域/专用/公用配置（公司非域局域网常被 Windows 判为公用）。"""
     exe = str(program or service_program()).replace('"', '')
+    delete = f'netsh advfirewall firewall delete rule name="{RULE_NAME}" >nul 2>&1'
     base = (f'netsh advfirewall firewall add rule name="{RULE_NAME}" dir=in action=allow '
-            f'profile=domain,private program="{exe}" remoteip={PRIVATE_RANGES}')
-    return f'{base} protocol=TCP localport={NODE_PORT} & {base} protocol=UDP localport={DISCOVERY_PORT}'
+            f'profile=domain,private,public program="{exe}" remoteip={PRIVATE_RANGES}')
+    return f'{delete} & {base} protocol=TCP localport={NODE_PORT} & {base} protocol=UDP localport={DISCOVERY_PORT}'
 
 
 def add_firewall_rule():

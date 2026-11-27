@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import os
+import select
 import socket
 import threading
 import time
@@ -140,51 +142,120 @@ class NodeClient:
             connection.close()
 
 
-def broadcast_addresses():
-    """本机各网卡所在网段的广播地址（按 /24 估算）和全网广播。"""
-    found = ['255.255.255.255']
+_FAKE_TUN_NET = ipaddress.ip_network('198.18.0.0/15')
+
+
+def _is_lan_ipv4(address):
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return ip.version == 4 and ip.is_private and not ip.is_loopback and not ip.is_link_local and ip not in _FAKE_TUN_NET
+
+
+def local_lan_ips():
+    """收集本机真实局域网 IPv4（排除回环、链路本地及 Clash/代理 TUN 198.18.0.0/15）。"""
+    found = []
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             address = info[4][0]
-            if not address.startswith('127.'):
-                found.append('.'.join(address.split('.')[:3] + ['255']))
+            if _is_lan_ipv4(address) and address not in found:
+                found.append(address)
     except OSError:
         pass
+    for probe in ('10.255.255.255', '172.16.255.255', '192.168.255.255'):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((probe, 1))
+                address = s.getsockname()[0]
+                if _is_lan_ipv4(address) and address not in found:
+                    found.append(address)
+        except OSError:
+            pass
+    return found
+
+
+def broadcast_addresses():
+    """本机各局域网网卡所在网段的广播地址（按 /24 估算）和全网广播。"""
+    found = ['255.255.255.255']
+    for address in local_lan_ips():
+        found.append('.'.join(address.split('.')[:3] + ['255']))
     return list(dict.fromkeys(found))
 
 
 def discover(timeout=1.2, port=DISCOVERY_PORT, targets=None):
-    """在内网里喊一声，收集回应的渲染机：{(主机, 端口): 信息}。"""
+    """在内网里喊一声，收集回应的渲染机：{(主机, 端口): 信息}。
+
+    多网卡或开启 Clash/VPN TUN 虚拟网卡时，单独绑定每张真实内网网卡发出广播，
+    避免 255.255.255.255 只走虚拟网卡而收不到物理局域网渲染机的回包。
+    """
     results = {}
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sockets = []
+    send_plan = []
+
+    def add_socket(bind_ip, dests):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind((bind_ip, 0))
+            sock.setblocking(False)
+            sockets.append(sock)
+            send_plan.append((sock, list(dict.fromkeys(dests))))
+        except OSError:
+            sock.close()
+
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(('0.0.0.0', 0))
-        for address in (targets or broadcast_addresses() + ['127.0.0.1']):
-            try:
-                sock.sendto(DISCOVER_MAGIC, (address, port))
-            except OSError:
-                continue
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
+        if targets is not None:
+            add_socket('0.0.0.0', list(targets))
+        else:
+            lan_ips = local_lan_ips()
+            for ip in lan_ips:
+                subnet_bcast = '.'.join(ip.split('.')[:3] + ['255'])
+                add_socket(ip, ['255.255.255.255', subnet_bcast])
+            add_socket('0.0.0.0', broadcast_addresses() + ['127.0.0.1'])
+
+        def burst():
+            for sock, dests in send_plan:
+                for address in dests:
+                    try:
+                        sock.sendto(DISCOVER_MAGIC, (address, port))
+                    except OSError:
+                        continue
+
+        burst()
+        start = time.monotonic()
+        deadline = start + timeout
+        second_sent = False
+        while sockets:
+            now_t = time.monotonic()
+            remaining = deadline - now_t
             if remaining <= 0:
                 break
-            sock.settimeout(remaining)
+            if not second_sent and timeout >= 0.6 and now_t - start >= 0.35:
+                burst()
+                second_sent = True
+            wait = remaining if second_sent or timeout < 0.6 else min(remaining, max(0.05, 0.35 - (now_t - start)))
             try:
-                data, (host, _) = sock.recvfrom(65536)
-            except socket.timeout:
+                ready, _, _ = select.select(sockets, [], [], wait)
+            except (OSError, ValueError):
                 break
-            except OSError:
-                continue
-            try:
-                info = json.loads(data)
-            except ValueError:
-                continue
-            if isinstance(info, dict) and info.get('service') == SERVICE and isinstance(info.get('port'), int):
-                results[(host, info['port'])] = info
+            for sock in ready:
+                try:
+                    data, (host, _) = sock.recvfrom(65536)
+                except OSError:
+                    continue
+                try:
+                    info = json.loads(data)
+                except ValueError:
+                    continue
+                if isinstance(info, dict) and info.get('service') == SERVICE and isinstance(info.get('port'), int):
+                    results[(host, info['port'])] = info
     finally:
-        sock.close()
+        for sock in sockets:
+            try:
+                sock.close()
+            except OSError:
+                pass
     return results
 
 

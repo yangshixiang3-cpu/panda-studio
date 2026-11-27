@@ -215,11 +215,46 @@ class RenderNodeHardeningTests(unittest.TestCase):
 
     def test_firewall_command_restricts_profile_and_program(self):
         cmd = node_setup.firewall_commands(program=r'D:\Panda Studio\PandaStudio.exe')
-        self.assertNotIn('profile=any', cmd)
-        self.assertIn('profile=domain,private', cmd)
+        self.assertIn('delete rule name="Panda Studio Render Node"', cmd)
+        self.assertIn('profile=domain,private,public', cmd)
+        self.assertIn('remoteip=LocalSubnet,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16', cmd)
         self.assertIn(r'program="D:\Panda Studio\PandaStudio.exe"', cmd)
         self.assertIn('protocol=TCP localport=8775', cmd)
         self.assertIn('protocol=UDP localport=8776', cmd)
+
+    def test_firewall_probe_detects_stale_domain_private_only_or_wrong_program(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        stale_public_missing = SimpleNamespace(
+            returncode=0,
+            stdout='配置文件: Domain,Private\n本地端口: 8775\n本地端口: 8776\n程序: D:\\Panda Studio\\PandaStudio.exe\n'.encode('utf-8'),
+        )
+        valid_rule = SimpleNamespace(
+            returncode=0,
+            stdout='配置文件: Domain,Private,Public\n本地端口: 8775\n本地端口: 8776\n程序: D:\\Panda Studio\\PandaStudio.exe\n'.encode('utf-8'),
+        )
+        wrong_program = SimpleNamespace(
+            returncode=0,
+            stdout='配置文件: Domain,Private,Public\n本地端口: 8775\n本地端口: 8776\n程序: D:\\旧目录\\PandaStudio.exe\n'.encode('utf-8'),
+        )
+        with patch('server.node_setup.os.name', 'nt'), \
+                patch('server.node_setup.service_program', return_value=r'D:\Panda Studio\PandaStudio.exe'):
+            with patch('server.node_setup.subprocess.run', return_value=stale_public_missing):
+                self.assertFalse(node_setup._probe_firewall_rule())
+            with patch('server.node_setup.subprocess.run', return_value=wrong_program):
+                self.assertFalse(node_setup._probe_firewall_rule())
+            with patch('server.node_setup.subprocess.run', return_value=valid_rule):
+                self.assertTrue(node_setup._probe_firewall_rule())
+
+    def test_lan_address_filters_clash_tun_198_18(self):
+        from server.remote_client import _is_lan_ipv4
+        self.assertFalse(render_node.is_lan_ipv4('198.18.0.1'))
+        self.assertFalse(render_node.is_lan_ipv4('169.254.1.2'))
+        self.assertFalse(render_node.is_lan_ipv4('127.0.0.1'))
+        self.assertTrue(render_node.is_lan_ipv4('10.168.2.11'))
+        self.assertTrue(render_node.is_lan_ipv4('192.168.1.50'))
+        self.assertFalse(_is_lan_ipv4('198.18.0.1'))
+        self.assertTrue(_is_lan_ipv4('10.168.2.11'))
 
     def test_pairing_code_ttl_rotation_and_existing_token_preserved(self):
         state = NodeState(self.root)

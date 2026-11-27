@@ -82,17 +82,45 @@ def allowed_address(address):
     return ip.is_private or ip.is_loopback or ip.is_link_local
 
 
+_FAKE_TUN_NET = ipaddress.ip_network('198.18.0.0/15')
+_RFC1918_NETS = (
+    ipaddress.ip_network('10.0.0.0/8'),
+    ipaddress.ip_network('172.16.0.0/12'),
+    ipaddress.ip_network('192.168.0.0/16'),
+)
+
+
+def is_lan_ipv4(address):
+    """判断是否适合作为内网直连 IPv4（排除回环、链路本地 APIPA 及 Clash/代理 TUN 198.18.0.0/15）。"""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if ip.version != 4 or ip.is_loopback or ip.is_link_local or ip in _FAKE_TUN_NET:
+        return False
+    return ip.is_private
+
+
 def local_addresses():
-    """这台电脑的内网 IPv4 地址（给设置页显示，方便手动连接）。"""
+    """这台电脑的内网 IPv4 地址（给设置页显示，方便手动连接；RFC1918 局域网地址排前面，过滤代理 TUN 假地址）。"""
     found = set()
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             address = info[4][0]
-            if not address.startswith('127.') and allowed_address(address):
+            if is_lan_ipv4(address):
                 found.add(address)
     except OSError:
         pass
-    return sorted(found)
+    for probe in ('10.255.255.255', '172.16.255.255', '192.168.255.255'):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect((probe, 1))
+                address = s.getsockname()[0]
+                if is_lan_ipv4(address):
+                    found.add(address)
+        except OSError:
+            pass
+    return sorted(found, key=lambda a: (0 if any(ipaddress.ip_address(a) in n for n in _RFC1918_NETS) else 1, a))
 
 
 def token_key(token):
